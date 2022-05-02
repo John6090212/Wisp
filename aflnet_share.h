@@ -17,6 +17,19 @@
 #include <arpa/inet.h> 
 #include <pthread.h>
 #include <limits.h>
+#include <sys/timerfd.h>
+#include <time.h>
+#include <stdint.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <poll.h>
+// for ck_realloc
+#include "alloc-inl.h"
+// for u32
+#include "types.h"
+#include "aflnet.h"
+// for logging
+#include "log.h"
 
 /* share_queue.h start */
 #define min(a,b) (((a) < (b)) ? (a) : (b))
@@ -25,7 +38,7 @@
 
 typedef struct share_queue share_queue;
 typedef struct buffer buffer;
-typedef struct message_t message_t;
+typedef struct my_message_t my_message_t;
 
 struct share_queue {
     int front, rear, capacity, current_size;
@@ -39,7 +52,7 @@ struct buffer {
 };
 
 // for datagram
-struct message_t {
+struct my_message_t {
     int length;
     char buf[MESSAGE_MAX_LENGTH];
 };
@@ -48,8 +61,8 @@ int stream_enqueue(void *shm, share_queue *q, char *c, int len);
 buffer *stream_dequeue(void *shm, share_queue *q, int len);
 
 // for datagram
-int datagram_enqueue(void *shm, share_queue *q, message_t m);
-message_t *datagram_dequeue(void *shm, share_queue *q);
+int datagram_enqueue(void *shm, share_queue *q, my_message_t m);
+my_message_t *datagram_dequeue(void *shm, share_queue *q);
 
 /* share_queue.h end */
 
@@ -89,6 +102,11 @@ struct mysocket {
     // for poll
     int is_accept_fd;
     int is_server;
+    // for socket timeout
+    struct timeval send_timeout;
+    struct timeval recv_timeout;
+    int send_timer_fd;
+    int recv_timer_fd;
 };
 
 /* socket.h end */
@@ -215,7 +233,9 @@ close_unit *close_arr;
 /* inet_client_shm.c start */
 
 mysocket socket_cli;
-
+// for timeout
+int my_settimer(int is_send);
+int my_stoptimer(int is_send);
 ssize_t my_recv(int sockfd, void *buf, size_t len, int flags);
 ssize_t my_send(int sockfd, const void *buf, size_t len, int flags);
 int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
@@ -223,5 +243,18 @@ int my_socket(int domain, int type, int protocol);
 int my_close(int fd);
 
 /* inet_client_shm.c end */
+
+/* function needed in modified send_over_network */
+
+int my_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int my_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+
+/* function for net_send and net_recv */
+// just for poll in net_send and net_recv
+int my_poll(struct pollfd *fds, nfds_t nfds, int timeout);
+int my_poll_settimer(int timeout);
+int my_poll_stoptimer(int fd);
+int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len);
+int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len);
 
 #endif

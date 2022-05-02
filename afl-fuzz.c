@@ -71,6 +71,8 @@
 #include <graphviz/gvc.h>
 #include <math.h>
 
+#include "aflnet_share.h"
+
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
 #  include <sys/sysctl.h>
 #endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
@@ -1010,9 +1012,9 @@ int send_over_network()
   //Create a TCP/UDP socket
   int sockfd = -1;
   if (net_protocol == PRO_TCP)
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    sockfd = my_socket(AF_INET, SOCK_STREAM, 0);
   else if (net_protocol == PRO_UDP)
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockfd = my_socket(AF_INET, SOCK_DGRAM, 0);
 
   if (sockfd < 0) {
     PFATAL("Cannot create a socket");
@@ -1023,7 +1025,7 @@ int send_over_network()
   struct timeval timeout;
   timeout.tv_sec = 0;
   timeout.tv_usec = socket_timeout_usecs;
-  setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
+  my_setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
 
   memset(&serv_addr, '0', sizeof(serv_addr));
 
@@ -1040,33 +1042,33 @@ int send_over_network()
     local_serv_addr.sin_port = htons(local_port);
 
     local_serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    if (bind(sockfd, (struct sockaddr*) &local_serv_addr, sizeof(struct sockaddr_in)))  {
+    if (my_bind(sockfd, (struct sockaddr*) &local_serv_addr, sizeof(struct sockaddr_in)))  {
       FATAL("Unable to bind socket on local source port");
     }
   }
 
-  if(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+  if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
     //If it cannot connect to the server under test
     //try it again as the server initial startup time is varied
     for (n=0; n < 1000; n++) {
-      if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
+      if (my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
       usleep(1000);
     }
     if (n== 1000) {
-      close(sockfd);
+      my_close(sockfd);
       return 1;
     }
   }
 
   //retrieve early server response if needed
-  if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
+  if (my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
 
   //write the request messages
   kliter_t(lms) *it;
   messages_sent = 0;
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
-    n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+    n = my_net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
@@ -1079,7 +1081,7 @@ int send_over_network()
 
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
-    if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
+    if (my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
       goto HANDLE_RESPONSES;
     }
 
@@ -1094,7 +1096,7 @@ int send_over_network()
 
 HANDLE_RESPONSES:
 
-  net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
+  my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
 
   if (messages_sent > 0 && response_bytes != NULL) {
     response_bytes[messages_sent - 1] = response_buf_size;
@@ -1106,7 +1108,7 @@ HANDLE_RESPONSES:
     if (has_new_bits(session_virgin_bits) != 2) break;
   }
 
-  close(sockfd);
+  my_close(sockfd);
 
   if (likely_buggy && false_negative_reduction) return 0;
 
