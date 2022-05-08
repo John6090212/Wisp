@@ -72,6 +72,7 @@
 #include <math.h>
 
 #include "aflnet_share.h"
+#include "log.h"
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
 #  include <sys/sysctl.h>
@@ -1012,10 +1013,155 @@ int send_over_network()
   //Create a TCP/UDP socket
   int sockfd = -1;
   if (net_protocol == PRO_TCP)
-    sockfd = my_socket(AF_INET, SOCK_STREAM, 0);
-  else if (net_protocol == PRO_UDP)
-    sockfd = my_socket(AF_INET, SOCK_DGRAM, 0);
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  else if (net_protocol == PRO_UDP){
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+  }
+  if (sockfd < 0) {
+    PFATAL("Cannot create a socket");
+  }
 
+  //Set timeout for socket data sending/receiving -- otherwise it causes a big delay
+  //if the server is still alive after processing all the requests
+  struct timeval timeout;
+  timeout.tv_sec = 0;
+  timeout.tv_usec = socket_timeout_usecs;
+  setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
+
+  memset(&serv_addr, '0', sizeof(serv_addr));
+
+  serv_addr.sin_family = AF_INET;
+  serv_addr.sin_port = htons(net_port);
+  serv_addr.sin_addr.s_addr = inet_addr(net_ip);
+
+  //This piece of code is only used for targets that send responses to a specific port number
+  //The Kamailio SIP server is an example. After running this code, the intialized sockfd 
+  //will be bound to the given local port
+  if(local_port > 0) {
+    local_serv_addr.sin_family = AF_INET;
+    local_serv_addr.sin_addr.s_addr = INADDR_ANY;
+    local_serv_addr.sin_port = htons(local_port);
+
+    local_serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    if (bind(sockfd, (struct sockaddr*) &local_serv_addr, sizeof(struct sockaddr_in)))  {
+      FATAL("Unable to bind socket on local source port");
+    }
+  }
+
+  if(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+    //If it cannot connect to the server under test
+    //try it again as the server initial startup time is varied
+    for (n=0; n < 1000; n++) {
+      if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
+      usleep(1000);
+    }
+    if (n== 1000) {
+      close(sockfd);
+      return 1;
+    }
+  }
+  log_debug("start net_recv early");
+  //retrieve early server response if needed
+  if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
+
+  //write the request messages
+  kliter_t(lms) *it;
+  messages_sent = 0;
+
+  for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
+    log_trace("start net_send in for loop, size=%d", kl_val(it)->msize);
+    n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+    log_trace("net_send end, n=%d", n);
+    messages_sent++;
+
+    //Allocate memory to store new accumulated response buffer size
+    response_bytes = (u32 *) ck_realloc(response_bytes, messages_sent * sizeof(u32));
+
+    //Jump out if something wrong leading to incomplete message sent
+    if (n != kl_val(it)->msize) {
+      goto HANDLE_RESPONSES;
+    }
+
+    //retrieve server response
+    u32 prev_buf_size = response_buf_size;
+    log_debug("start my_net_recv in for loop");
+    if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
+      log_debug("jump to HANDLE_RESPONSES");
+      goto HANDLE_RESPONSES;
+    }
+
+    //Update accumulated response buffer size
+    response_bytes[messages_sent - 1] = response_buf_size;
+
+    //set likely_buggy flag if AFLNet does not receive any feedback from the server
+    //it could be a signal of a potentiall server crash, like the case of CVE-2019-7314
+    if (prev_buf_size == response_buf_size) likely_buggy = 1;
+    else likely_buggy = 0;
+  }
+  log_debug("go to HANDLE_RESPONSES after for loop");
+HANDLE_RESPONSES:
+  log_debug("start net_recv in HANDLE_RESPONSES");
+  net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
+
+  if (messages_sent > 0 && response_bytes != NULL) {
+    response_bytes[messages_sent - 1] = response_buf_size;
+  }
+
+  //wait a bit letting the server to complete its remaining task(s)
+  memset(session_virgin_bits, 255, MAP_SIZE);
+  while(1) {
+    if (has_new_bits(session_virgin_bits) != 2) break;
+  }
+  log_debug("start close");
+  close(sockfd);
+
+  if (likely_buggy && false_negative_reduction) return 0;
+
+  if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
+
+  //give the server a bit more time to gracefully terminate
+  while(1) {
+    int status = kill(child_pid, 0);
+    if ((status != 0) && (errno == ESRCH)) break;
+  }
+
+  return 0;
+}
+
+int my_send_over_network()
+{
+  int n;
+  u8 likely_buggy = 0;
+  struct sockaddr_in serv_addr;
+  struct sockaddr_in local_serv_addr;
+
+  //Clean up the server if needed
+  if (cleanup_script) system(cleanup_script);
+
+  //Wait a bit for the server initialization
+  usleep(server_wait_usecs);
+
+  //Clear the response buffer and reset the response buffer size
+  if (response_buf) {
+    ck_free(response_buf);
+    response_buf = NULL;
+    response_buf_size = 0;
+  }
+
+  if (response_bytes) {
+    ck_free(response_bytes);
+    response_bytes = NULL;
+  }
+
+  //Create a TCP/UDP socket
+  int sockfd = -1;
+  if (net_protocol == PRO_TCP)
+    sockfd = my_socket(AF_INET, SOCK_STREAM, 0);
+  else if (net_protocol == PRO_UDP){
+    log_fatal("no support udp socket");
+    exit(999);
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+  }
   if (sockfd < 0) {
     PFATAL("Cannot create a socket");
   }
@@ -1046,7 +1192,7 @@ int send_over_network()
       FATAL("Unable to bind socket on local source port");
     }
   }
-
+  log_trace("start my_connect");
   if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
     //If it cannot connect to the server under test
     //try it again as the server initial startup time is varied
@@ -1059,7 +1205,7 @@ int send_over_network()
       return 1;
     }
   }
-
+  log_debug("start my_net_recv early");
   //retrieve early server response if needed
   if (my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
 
@@ -1068,6 +1214,7 @@ int send_over_network()
   messages_sent = 0;
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
+    log_trace("start my_net_send in for loop");
     n = my_net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
     messages_sent++;
 
@@ -1081,7 +1228,9 @@ int send_over_network()
 
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
+    log_debug("start my_net_recv in for loop");
     if (my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
+      log_debug("jump to HANDLE_RESPONSES");
       goto HANDLE_RESPONSES;
     }
 
@@ -1093,9 +1242,9 @@ int send_over_network()
     if (prev_buf_size == response_buf_size) likely_buggy = 1;
     else likely_buggy = 0;
   }
-
+  log_debug("go to HANDLE_RESPONSES after for loop");
 HANDLE_RESPONSES:
-
+  log_debug("start my_net_recv in HANDLE_RESPONSES");
   my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
 
   if (messages_sent > 0 && response_bytes != NULL) {
@@ -1107,7 +1256,7 @@ HANDLE_RESPONSES:
   while(1) {
     if (has_new_bits(session_virgin_bits) != 2) break;
   }
-
+  log_debug("start my_close");
   my_close(sockfd);
 
   if (likely_buggy && false_negative_reduction) return 0;
@@ -1122,6 +1271,7 @@ HANDLE_RESPONSES:
 
   return 0;
 }
+
 /* End of AFLNet-specific variables & functions */
 
 /* Get unix time in milliseconds */
@@ -3258,11 +3408,11 @@ static u8 run_target(char** argv, u32 timeout) {
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
   if (dumb_mode == 1 || no_forkserver) {
-    if (use_net) send_over_network();
+    if (use_net) my_send_over_network();
     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
   } else {
-    if (use_net) send_over_network();
+    if (use_net) {log_trace("start send_over_network"); my_send_over_network(); log_trace("finish send_over_network");}
     s32 res;
 
     if ((res = read(fsrv_st_fd, &status, 4)) != 4) {
@@ -3399,7 +3549,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     if (!first_run && !(stage_cur % stats_update_freq)) show_stats();
 
     write_to_testcase(use_mem, q->len);
-
+    log_trace("start run_target");
     fault = run_target(argv, use_tmout);
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
@@ -3551,7 +3701,7 @@ static void perform_dry_run(char** argv) {
 
     /* AFLNet construct the kl_messages linked list for this queue entry*/
     kl_messages = construct_kl_messages(q->fname, q->regions, q->region_count);
-
+    log_trace("start calibrate_case");
     res = calibrate_case(argv, q, use_mem, 0, 1);
     ck_free(use_mem);
 
@@ -8733,6 +8883,68 @@ static void save_cmdline(u32 argc, char** argv) {
 
 }
 
+/* aflnet_share initialization */
+__attribute__((constructor(101))) void aflnet_share_init(void){
+  // initialize logging
+  log_set_quiet(true);
+  
+  char *log_name = getenv("aflnet_share_log");
+  if(log_name){
+      FILE *fp = fopen((const char *)log_name, "a+");
+      log_add_fp(fp, LOG_DEBUG);
+  }
+  log_trace("attribute init");
+  // initialize share memory
+  shm_fd = shm_open("message_sm", O_CREAT | O_RDWR, 0666);
+  if (shm_fd < 0){
+      log_error("shm_open failed");
+      exit(999);
+  }
+  ftruncate(shm_fd, COMMUNICATE_SHM_SIZE);
+
+  shm_ptr = mmap(NULL, COMMUNICATE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+  if(shm_ptr == (void *)-1){
+      log_error("mmap failed");
+  }
+
+  // initialize connect share memory
+  connect_shm_fd = shm_open("connect_sm", O_CREAT | O_RDWR, 0666);
+  if (connect_shm_fd < 0){
+      log_error("shm_open failed");
+      exit(999);
+  }
+  ftruncate(connect_shm_fd, CONNECT_SHM_SIZE);
+
+  connect_shm_ptr = mmap(NULL, CONNECT_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, connect_shm_fd, 0);
+  if(connect_shm_ptr == (void *)-1){
+      log_error("mmap failed");
+  }
+  connect_queue_ptr = (connect_queue *)(connect_shm_ptr);
+  accept_queue_ptr = (accept_queue *)(connect_shm_ptr+sizeof(connect_queue));
+  connect_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue));
+  accept_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue)+sizeof(pthread_mutex_t));
+
+  // initialize socket_cli
+  memset(&socket_cli, 0, sizeof(mysocket));
+
+  // initialize close share memory
+  close_shm_fd = shm_open("close_sm", O_CREAT | O_RDWR, 0666);
+  if (close_shm_fd < 0){
+      log_error("shm_open failed");
+      exit(999);
+  }
+  ftruncate(close_shm_fd, CLOSE_SHM_SIZE);
+
+  close_shm_ptr = mmap(NULL, CLOSE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, close_shm_fd, 0);
+  if(close_shm_ptr == (void *)-1){
+      log_error("mmap failed");
+  }
+  close_arr = (close_unit *)close_shm_ptr;
+
+  // set signal handler for recv and send timeout
+  signal(SIGUSR2, my_signal_handler);
+
+}
 
 #ifndef AFL_LIB
 
@@ -9134,7 +9346,7 @@ int main(int argc, char** argv) {
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
   else
     use_argv = argv + optind;
-
+  log_trace("start perfrom_dry_run");
   perform_dry_run(use_argv);
 
   cull_queue();

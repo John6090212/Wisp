@@ -10,6 +10,8 @@
 
 #include "alloc-inl.h"
 #include "aflnet.h"
+#include "aflnet_share.h"
+#include "log.h"
 
 // Protocol-specific functions for extracting requests and responses
 
@@ -1012,13 +1014,13 @@ unsigned int* extract_response_codes_dns(unsigned char* buf, unsigned int buf_si
     memcpy(&mem[mem_count], buf + byte_count, 1);
 
     // The original query will be included with the response.
-    if ((mem_count >= 12) && (*(mem+mem_count) == 0)) {
+    if ((mem_count >= 14) && (*(mem+mem_count) == 0)) {
       // 4 bytes left of the query. Jump to the answer.
       byte_count += 5;
       mem_count += 5;
 
       // Save the 3rd & 4th bytes as the response code
-      unsigned int message_code = (unsigned int) ((mem[2] << 8) + mem[3]);
+      unsigned int message_code = (unsigned int) ((mem[4] << 8) + mem[5]);
 
       state_count++;
       state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
@@ -1644,6 +1646,13 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
   setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
   if (rv > 0) {
     if (pfd[0].revents & POLLOUT) {
+      // send 2-byte dns query length for tcp
+      unsigned char tcp_len[2] = {0};
+      tcp_len[0] = len / 256;
+      tcp_len[1] = len % 256;
+      n = send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
+      if (n == 0) return byte_count;
+      if (n == -1) return -1;
       while (byte_count < len) {
         usleep(10);
         n = send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
@@ -1657,37 +1666,56 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
 }
 
 int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len) {
+  struct timespec start, finish, delta;
+  clock_gettime(CLOCK_REALTIME, &start);
   char temp_buf[1000];
   int n;
   struct pollfd pfd[1];
   pfd[0].fd = sockfd;
   pfd[0].events = POLLIN;
   int rv = poll(pfd, 1, poll_w);
-
+  log_trace("poll end, rv=%d", rv);
   setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
   // data received
   if (rv > 0) {
     if (pfd[0].revents & POLLIN) {
+      log_debug("recv start");
       n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
       if ((n < 0) && (errno != EAGAIN)) {
+        log_trace("recv failed");
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
         return 1;
       }
+      log_debug("recv end, n=%d", n);
       while (n > 0) {
+        log_trace("while start, n=%d", n);
         usleep(10);
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
         memcpy(&(*response_buf)[*len], temp_buf, n);
         (*response_buf)[(*len) + n] = '\0';
         *len = *len + n;
+        log_debug("start recv in while loop");
         n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
+        log_debug("recv in while loop end, n=%d", n);
         if ((n < 0) && (errno != EAGAIN)) {
+          log_trace("recv failed");
+          clock_gettime(CLOCK_REALTIME, &finish);
+          sub_timespec(start, finish, &delta);
+          log_info("net_recv (error in while) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
           return 1;
         }
       }
+      log_trace("while end");
     }
   } else
     if (rv < 0) // an error was returned
       return 1;
 
+  clock_gettime(CLOCK_REALTIME, &finish);
+  sub_timespec(start, finish, &delta);
+  log_info("net_recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
   // rv == 0 poll timeout or all data pending after poll has been received successfully
   return 0;
 }

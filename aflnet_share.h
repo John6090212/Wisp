@@ -17,9 +17,8 @@
 #include <arpa/inet.h> 
 #include <pthread.h>
 #include <limits.h>
-#include <sys/timerfd.h>
 #include <time.h>
-#include <stdint.h>
+#include <signal.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <poll.h>
@@ -105,8 +104,10 @@ struct mysocket {
     // for socket timeout
     struct timeval send_timeout;
     struct timeval recv_timeout;
-    int send_timer_fd;
-    int recv_timer_fd;
+    timer_t send_timer;
+    timer_t recv_timer;
+    timer_t poll_timer;
+    int is_socket_timeout;
 };
 
 /* socket.h end */
@@ -234,6 +235,8 @@ close_unit *close_arr;
 
 mysocket socket_cli;
 // for timeout
+void my_signal_handler(int signum);
+int my_createtimer(timer_t *timer);
 int my_settimer(int is_send);
 int my_stoptimer(int is_send);
 ssize_t my_recv(int sockfd, void *buf, size_t len, int flags);
@@ -253,8 +256,14 @@ int my_setsockopt(int sockfd, int level, int optname, const void *optval, sockle
 // just for poll in net_send and net_recv
 int my_poll(struct pollfd *fds, nfds_t nfds, int timeout);
 int my_poll_settimer(int timeout);
-int my_poll_stoptimer(int fd);
+int my_poll_stoptimer(void);
 int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len);
 int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len);
+
+/* debug */
+// log char array in hex
+void my_log_hex(char *m, int length);
+enum { NS_PER_SECOND = 1000000000 };
+void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td);
 
 #endif

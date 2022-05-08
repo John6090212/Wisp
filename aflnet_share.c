@@ -282,22 +282,32 @@ acception* Accept_dequeue(void *shm, accept_queue* queue){
 /* queue.c end */
 
 /* inet_client_shm.c start */
+void my_signal_handler(int signum){
+    if(signum == SIGUSR2){
+        __sync_val_compare_and_swap(&socket_cli.is_socket_timeout, 0, 1);
+    }
+}
+
+int my_createtimer(timer_t *timer){
+    struct sigevent evp = (struct sigevent){
+        .sigev_value.sival_ptr = timer,
+        .sigev_notify = SIGEV_SIGNAL,
+        .sigev_signo = SIGUSR2
+    };
+
+    return timer_create(CLOCK_REALTIME, &evp, timer);
+}
+
 int my_settimer(int is_send){
-    int fd;
+    timer_t timer;
     struct timeval tv;
     if(is_send){
-        fd = socket_cli.send_timer_fd;
+        timer = socket_cli.send_timer;
         tv = socket_cli.send_timeout;
     }
     else{
-        fd = socket_cli.recv_timer_fd;
+        timer = socket_cli.recv_timer;
         tv = socket_cli.recv_timeout;
-    }
-
-    struct timespec now;
-    if (clock_gettime(CLOCK_REALTIME, &now) == -1){
-        log_error("clock_gettime failed");
-        return -1;
     }
 
     struct itimerspec new_value = (struct itimerspec){
@@ -306,12 +316,12 @@ int my_settimer(int is_send){
             .tv_nsec = 0
         },
         .it_value = (struct timespec){
-            .tv_sec = now.tv_sec + tv.tv_sec + (time_t)(tv.tv_usec / 1000),
-            .tv_nsec = now.tv_nsec + (long)(tv.tv_usec % 1000) * 1000000
+            .tv_sec = tv.tv_sec + (time_t)(tv.tv_usec / 1000000),
+            .tv_nsec = (long)(tv.tv_usec % 1000000) * 1000
         }
     };
-    if(timerfd_settime(fd, TFD_TIMER_ABSTIME, &new_value, NULL) == -1){
-        log_error("settimer failed");
+    if(timer_settime(timer, 0, &new_value, NULL) == -1){
+        log_error("settimer failed, %s", strerror(errno));
         return -1;
     }
 
@@ -319,11 +329,11 @@ int my_settimer(int is_send){
 }
 
 int my_stoptimer(int is_send){
-    int fd;
+    timer_t timer;
     if(is_send)
-        fd = socket_cli.send_timer_fd;
+        timer = socket_cli.send_timer;
     else
-        fd = socket_cli.recv_timer_fd;
+        timer = socket_cli.recv_timer;
 
     struct itimerspec new_value = (struct itimerspec){
         .it_interval = (struct timespec){
@@ -335,7 +345,7 @@ int my_stoptimer(int is_send){
             .tv_nsec = 0
         }
     };    
-    if(timerfd_settime(fd, TFD_TIMER_ABSTIME, &new_value, NULL) == -1){
+    if(timer_settime(timer, TIMER_ABSTIME, &new_value, NULL) == -1){
         log_error("stoptimer failed");
         return -1;
     }
@@ -344,6 +354,8 @@ int my_stoptimer(int is_send){
 }
 
 ssize_t my_recv(int sockfd, void *buf, size_t len, int flags){
+    struct timespec start, finish, delta;
+    clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
         log_error("socket not in use\n");
         return -1;
@@ -352,42 +364,48 @@ ssize_t my_recv(int sockfd, void *buf, size_t len, int flags){
     if(close_arr[socket_cli.share_unit_index].server_write)
         return 0;
 
-    if(socket_cli.recv_timeout.tv_sec > 0 || socket_cli.recv_timeout.tv_usec > 0){
-        if(socket_cli.recv_timer_fd == -1){
-            if((socket_cli.recv_timer_fd = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK)) == -1){
-                log_error("recv_timer_fd create failed");
-                return 0;
-            }
+    bool need_timeout = false;
+
+    while(__sync_bool_compare_and_swap(&socket_cli.response_queue->current_size, 0, 0)){
+        if(close_arr[socket_cli.share_unit_index].server_write){
+            if(need_timeout && my_stoptimer(false) == -1)
+                return -1;    
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("recv (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);        
+            return 0;    
         }
 
-        if(my_settimer(false) == -1)
-            return 0;
-    }
+        if(!need_timeout && (socket_cli.recv_timeout.tv_sec > 0 || socket_cli.recv_timeout.tv_usec > 0)){
+            if(socket_cli.recv_timer == NULL){
+                if(my_createtimer(&socket_cli.recv_timer) == -1){
+                    log_error("recv_timer create failed");
+                    socket_cli.recv_timer = NULL;
+                    return 0;
+                }
+            }
 
-    while(socket_cli.response_queue->current_size == 0){
-        if(close_arr[socket_cli.share_unit_index].server_write)
-            return 0;    
+            socket_cli.is_socket_timeout = 0;
+            if(my_settimer(false) == -1)
+                return 0;
 
-        if(socket_cli.recv_timer_fd == -1)
+            need_timeout = true;
+        }
+
+        if(socket_cli.recv_timer == NULL)
             continue;
 
-        uint64_t i;
-        ssize_t n = read(socket_cli.recv_timer_fd, &i, sizeof(uint64_t));
-        if(n == -1){
-            if(errno == EAGAIN)
-                continue;
-
-            log_error("read recv_timer_fd failed");
-            return -1;
-        }
-
-        if(n == sizeof(uint64_t)){
+        if(__sync_bool_compare_and_swap(&socket_cli.is_socket_timeout, 1, 1)){
+            socket_cli.is_socket_timeout = 0;
             errno = EWOULDBLOCK;
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("recv (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
             return -1;
         }
     }
 
-    if(socket_cli.recv_timer_fd >= 0){
+    if(socket_cli.recv_timer != NULL && need_timeout){
         if(my_stoptimer(false) == -1){
             return -1;
         }
@@ -404,67 +422,83 @@ ssize_t my_recv(int sockfd, void *buf, size_t len, int flags){
     free(b);
     if(pthread_mutex_unlock(socket_cli.response_lock) != 0) log_error("pthread_mutex_unlock response_lock failed");
 
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(start, finish, &delta);
+    log_info("recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
     return count;
 }
 
 ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
+    struct timespec start, finish, delta;
+    clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
         log_error("socket not in use");
         return -1;
     }
+    
+    bool need_timeout = false;
+    if(__sync_bool_compare_and_swap(&socket_cli.request_queue->current_size, socket_cli.request_queue->capacity, socket_cli.request_queue->capacity))
+        need_timeout = true;
 
-    if(socket_cli.send_timeout.tv_sec > 0 || socket_cli.send_timeout.tv_usec > 0){
-        if(socket_cli.send_timer_fd == -1){
-            if((socket_cli.send_timer_fd = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK)) == -1){
-                log_error("send_timer_fd create failed");
+    if(need_timeout && (socket_cli.send_timeout.tv_sec > 0 || socket_cli.send_timeout.tv_usec > 0)){
+        if(socket_cli.send_timer == NULL){
+            if(my_createtimer(&socket_cli.send_timer) == -1){
+                log_error("send_timer create failed");
                 return 0;
             }
         }
 
+        socket_cli.is_socket_timeout = 0;
+
         if(my_settimer(true) == -1)
             return 0;
     }
-
+    
     while(socket_cli.request_queue->current_size == socket_cli.request_queue->capacity){
-        if(close_arr[socket_cli.share_unit_index].server_read)
+        if(close_arr[socket_cli.share_unit_index].server_read){
+            if(need_timeout && my_stoptimer(true) == -1)
+                return -1; 
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("send (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
             return 0;
-
-        if(socket_cli.send_timer_fd == -1)
+        }
+        
+        if(socket_cli.send_timer == NULL)
             continue;
 
-        uint64_t i;
-        ssize_t n = read(socket_cli.send_timer_fd, &i, sizeof(uint64_t));
-        if(n == -1){
-            if(errno == EAGAIN)
-                continue;
-
-            log_error("read send_timer_fd failed");
-            return -1;
-        }
-
-        if(n == sizeof(uint64_t)){
+        if(__sync_bool_compare_and_swap(&socket_cli.is_socket_timeout, 1, 1)){
+            socket_cli.is_socket_timeout = 0;
             errno = EWOULDBLOCK;
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("send (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
             return -1;
-        }
+        }        
     }
-
-    if(socket_cli.send_timer_fd >= 0){
+    
+    if(socket_cli.send_timer != NULL && need_timeout){
         if(my_stoptimer(true) == -1){
             return -1;
         }
     }
-
+    
     if(pthread_mutex_lock(socket_cli.request_lock) != 0) log_error("pthread_mutex_lock request_lock failed");
     ssize_t count = 0;
     count = stream_enqueue(shm_ptr, socket_cli.request_queue, (char *)buf, len);
     if(pthread_mutex_unlock(socket_cli.request_lock) != 0) log_error("pthread_mutex_unlock request_lock failed");
 
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(start, finish, &delta);
+    log_info("send (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
     return count;
 }
 
 int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
+    struct timespec start, finish, delta;
+    clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
-        printf("socket not initialized\n");
+        log_error("socket not initialized");
         return -1;
     }
 
@@ -472,21 +506,25 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
         .client_fd = sockfd
     };
     memcpy(&c.addr, addr, sizeof(struct sockaddr));
-
+    log_trace("before my_connect while loop");
     while(connect_queue_ptr->size == connect_queue_ptr->capacity);
+    log_trace("after my_connect while_loop");
     if(pthread_mutex_lock(connect_lock) != 0) perror("pthread_mutex_lock failed");
     if(Connect_enqueue(connect_shm_ptr, connect_queue_ptr, c) == -1)
-        printf("connect queue enqueue failed\n");
+        log_error("connect queue enqueue failed");
     if(pthread_mutex_unlock(connect_lock) != 0) perror("pthread_mutex_unlock failed");
-    
-    while(accept_queue_ptr->size == 0);
+    log_trace("before accept_queue while loop");
+    while(accept_queue_ptr->size == 0){
+        usleep(1);
+    }
+    log_trace("after accept_queue while loop");
     if(pthread_mutex_lock(accept_lock) != 0) perror("pthread_mutex_lock failed");
     acception *a = Accept_dequeue(connect_shm_ptr, accept_queue_ptr);
     if(pthread_mutex_unlock(accept_lock) != 0) perror("pthread_mutex_unlock failed");
     
     if(a != NULL){
         if(a->client_fd != sockfd){
-            printf("fd is different\n");
+            log_error("fd is different");
             free(a);
             return -1;
         }
@@ -496,15 +534,21 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
         socket_cli.request_lock = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].request_lock);
         socket_cli.response_lock = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].response_lock);
         free(a);
+        log_trace("connect success");
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("connect time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
         return 0;
     }
     else{
-        printf("accept queue dequeue failed\n");
+        log_error("accept queue dequeue failed");
         return -1;
     }
 }
 
 int my_socket(int domain, int type, int protocol){
+    struct timespec start, finish, delta;
+    clock_gettime(CLOCK_REALTIME, &start);
     socket_cli = (mysocket){
         .domain = domain,
         .type = type,
@@ -517,7 +561,7 @@ int my_socket(int domain, int type, int protocol){
         .msg_more_size = 0,
         .share_unit_index = -1,
         .file_status_flags = 0,
-                .send_timeout = (struct timeval) {
+        .send_timeout = (struct timeval) {
             .tv_sec = 0,
             .tv_usec = 0
         },
@@ -525,17 +569,23 @@ int my_socket(int domain, int type, int protocol){
             .tv_sec = 0,
             .tv_usec = 0
         },
-        .send_timer_fd = -1,
-        .recv_timer_fd = -1
+        .send_timer = NULL,
+        .recv_timer = NULL,
+        .is_socket_timeout = 0,
+        .poll_timer = NULL
     };
-
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(start, finish, &delta);
+    log_info("socket time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
     // return original_socket(domain, type, protocol);
     return 999;
 }
 
 int my_close(int fd){
+    struct timespec start, finish, delta;
+    clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
-        printf("socket not in use\n");
+        log_error("socket not in use");
         return -1;
     }
     if(socket_cli.share_unit_index >= 0){
@@ -543,23 +593,31 @@ int my_close(int fd){
         close_arr[socket_cli.share_unit_index].client_write = 1;
     }
 
-    // close timer    
-    if(socket_cli.send_timer_fd >= 0)
-        close(socket_cli.send_timer_fd);
-
-    if(socket_cli.recv_timer_fd >= 0)
-        close(socket_cli.recv_timer_fd);
+    // close timer
+    if(socket_cli.send_timer != NULL){
+        timer_delete(socket_cli.send_timer);
+        socket_cli.send_timer = NULL;
+    }
+    if(socket_cli.recv_timer != NULL){
+        timer_delete(socket_cli.recv_timer);
+        socket_cli.send_timer = NULL;
+    }
+    if(socket_cli.poll_timer != NULL){
+        timer_delete(socket_cli.poll_timer);
+        socket_cli.poll_timer = NULL;
+    }
 
     // clear socket_cli
     memset(&socket_cli, 0, sizeof(mysocket));
-
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(start, finish, &delta);
+    log_info("close time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
     return 0;
 }
 
 /* inet_client_shm.c end */
 
 /* function needed in modified send_over_network */
-
 int my_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     log_fatal("my_bind is called!");
     exit(999);
@@ -587,16 +645,62 @@ int my_setsockopt(int sockfd, int level, int optname, const void *optval, sockle
     return 0;
 }
 
+int my_poll_settimer(int timeout){
+    timer_t timer = socket_cli.poll_timer;
+
+    struct itimerspec new_value = (struct itimerspec){
+        .it_interval = (struct timespec){
+            .tv_sec = 0,
+            .tv_nsec = 0
+        },
+        .it_value = (struct timespec){
+            .tv_sec = (time_t)(timeout / 1000),
+            .tv_nsec = (long)(timeout % 1000) * 1000000
+        }
+    };
+
+    if(timer_settime(timer, 0, &new_value, NULL) == -1){
+        log_error("poll settimer failed, %s", strerror(errno));
+        if(socket_cli.poll_timer == NULL)
+            log_debug("sock poll timer is null");
+        return -1;
+    }
+
+    return 0;
+}
+
+int my_poll_stoptimer(void){
+    timer_t timer = socket_cli.poll_timer;
+
+    struct itimerspec new_value = (struct itimerspec){
+        .it_interval = (struct timespec){
+            .tv_sec = 0,
+            .tv_nsec = 0
+        },
+        .it_value = (struct timespec){
+            .tv_sec = 0,
+            .tv_nsec = 0
+        }
+    };    
+    if(timer_settime(timer, TIMER_ABSTIME, &new_value, NULL) == -1){
+        log_error("poll stoptimer failed");
+        return -1;
+    }
+
+    return 0;
+}
+
 int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
+    struct timespec start, finish, delta;
+    clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
         log_error("socket not in use");
         return -1;
     }
 
-    int fd = -1;
     int rv = 0;
-
     fds[0].revents = 0;
+
     if(timeout == -1){
         while(1){
             if(fds[0].events & POLLIN && socket_cli.response_queue->current_size > 0){
@@ -612,10 +716,34 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
             } 
         }
     }
+
+
+    if(fds[0].events & POLLIN && socket_cli.response_queue->current_size > 0){
+        fds[0].revents |= POLLIN;
+        rv++;
+    }
+
+    if(fds[0].events & POLLOUT && socket_cli.request_queue->current_size < socket_cli.request_queue->capacity){
+        fds[0].revents |= POLLOUT;
+        rv++;
+    }
+
+    if(timeout == 0 || rv > 0){
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("poll (first rv>0) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);    
+        return rv;
+    }
     
     if(timeout > 0){
-        fd = my_poll_settimer(timeout);
-        if(fd == -1)
+        if(socket_cli.poll_timer == NULL && my_createtimer(&socket_cli.poll_timer) == -1){
+            log_error("poll_timer create failed");
+            return -1;
+        }
+        
+        socket_cli.is_socket_timeout = 0;
+
+        if(my_poll_settimer(timeout) == -1)
             return -1;
     }
     
@@ -623,41 +751,28 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
         if(fds[0].events & POLLIN && socket_cli.response_queue->current_size > 0){
             fds[0].revents |= POLLIN;
             rv++;
-        }   
+        }
 
         if(fds[0].events & POLLOUT && socket_cli.request_queue->current_size < socket_cli.request_queue->capacity){
             fds[0].revents |= POLLOUT;
             rv++;
         }
 
-        if(timeout == 0){
-            close(fd);
-            return rv;
-        }
-        
         if(rv > 0){
-            if(my_poll_stoptimer(fd) == -1){
-                close(fd);
+            if(my_poll_stoptimer() == -1)
                 return -1;
-            }
-
-            close(fd);
+            
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("poll (rv>0) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
             return rv;
         }
 
-        uint64_t i;
-        ssize_t n = read(fd, &i, sizeof(uint64_t));
-        if(n == -1){
-            if(errno == EAGAIN)
-                continue;
-
-            log_error("my_poll read timerfd failed");
-            close(fd);
-            return -1;
-        }
-
-        if(n == sizeof(uint64_t)){
-            close(fd);
+        if(__sync_bool_compare_and_swap(&socket_cli.is_socket_timeout, 1, 1)){
+            socket_cli.is_socket_timeout = 0;
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("poll (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
             return 0;
         }
     }
@@ -665,57 +780,9 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
     return rv;
 }
 
-int my_poll_settimer(int timeout){
-    int fd;
-    if((fd = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK)) == -1){
-        log_error("my_poll timerfd_create failed");
-        return -1;
-    }    
-
-    struct timespec now;
-    if (clock_gettime(CLOCK_REALTIME, &now) == -1){
-        log_error("clock_gettime failed");
-        return -1;
-    }
-
-    struct itimerspec new_value = (struct itimerspec){
-        .it_interval = (struct timespec){
-            .tv_sec = 0,
-            .tv_nsec = 0
-        },
-        .it_value = (struct timespec){
-            .tv_sec = now.tv_sec + (time_t)(timeout / 1000),
-            .tv_nsec = now.tv_nsec + (long)(timeout % 1000) * 1000000
-        }
-    };
-    if(timerfd_settime(fd, TFD_TIMER_ABSTIME, &new_value, NULL) == -1){
-        log_error("poll settimer failed");
-        return -1;
-    }
-
-    return fd;
-}
-
-int my_poll_stoptimer(int fd){
-    struct itimerspec new_value = (struct itimerspec){
-        .it_interval = (struct timespec){
-            .tv_sec = 0,
-            .tv_nsec = 0
-        },
-        .it_value = (struct timespec){
-            .tv_sec = 0,
-            .tv_nsec = 0
-        }
-    };    
-    if(timerfd_settime(fd, TFD_TIMER_ABSTIME, &new_value, NULL) == -1){
-        log_error("stoptimer failed");
-        return -1;
-    }
-
-    return 0;
-}
-
 int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
+  struct timespec start, finish, delta;
+  clock_gettime(CLOCK_REALTIME, &start);
   unsigned int byte_count = 0;
   int n;
   struct pollfd pfd[1];
@@ -726,6 +793,13 @@ int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len)
   my_setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
   if (rv > 0) {
     if (pfd[0].revents & POLLOUT) {
+      // send 2-byte dns query length for tcp
+      unsigned char tcp_len[2] = {0};
+      tcp_len[0] = len / 256;
+      tcp_len[1] = len % 256;
+      n = my_send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
+      if (n == 0) return byte_count;
+      if (n == -1) return -1;
       while (byte_count < len) {
         usleep(10);
         n = my_send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
@@ -735,41 +809,85 @@ int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len)
       }
     }
   }
+  clock_gettime(CLOCK_REALTIME, &finish);
+  sub_timespec(start, finish, &delta);
+  log_info("my_net_send time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
   return byte_count;
 }
 
 int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len) {
+  struct timespec start, finish, delta;
+  clock_gettime(CLOCK_REALTIME, &start);
   char temp_buf[1000];
   int n;
   struct pollfd pfd[1];
   pfd[0].fd = sockfd;
   pfd[0].events = POLLIN;
+  log_trace("my_poll start");
   int rv = my_poll(pfd, 1, poll_w);
-
+  log_trace("my_poll end, rv=%d", rv);
   my_setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
   // data received
   if (rv > 0) {
     if (pfd[0].revents & POLLIN) {
+      log_debug("my_recv start");
       n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
       if ((n < 0) && (errno != EAGAIN)) {
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("my_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
         return 1;
       }
+      log_debug("my_recv end, n=%d", n);
       while (n > 0) {
         usleep(10);
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
         memcpy(&(*response_buf)[*len], temp_buf, n);
         (*response_buf)[(*len) + n] = '\0';
         *len = *len + n;
+        log_debug("start my_recv in while loop");
         n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
+        log_debug("my_recv in while loop end, n=%d", n);
         if ((n < 0) && (errno != EAGAIN)) {
+          clock_gettime(CLOCK_REALTIME, &finish);
+          sub_timespec(start, finish, &delta);
+          log_info("my_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
           return 1;
         }
       }
+      log_debug("while end");
     }
   } else
     if (rv < 0) // an error was returned
       return 1;
 
+  clock_gettime(CLOCK_REALTIME, &finish);
+  sub_timespec(start, finish, &delta);
+  log_info("my_net_recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
   // rv == 0 poll timeout or all data pending after poll has been received successfully
   return 0;
+}
+
+/* for debug */
+
+void my_log_hex(char *m, int length){
+    for(int i = 0; i < length; i++){
+        log_trace("%02x ", m[i]);
+    }
+}
+
+void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
+{
+    td->tv_nsec = t2.tv_nsec - t1.tv_nsec;
+    td->tv_sec  = t2.tv_sec - t1.tv_sec;
+    if (td->tv_sec > 0 && td->tv_nsec < 0)
+    {
+        td->tv_nsec += NS_PER_SECOND;
+        td->tv_sec--;
+    }
+    else if (td->tv_sec < 0 && td->tv_nsec > 0)
+    {
+        td->tv_nsec -= NS_PER_SECOND;
+        td->tv_sec++;
+    }
 }

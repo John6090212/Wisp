@@ -23,8 +23,7 @@ DOC_PATH    = $(PREFIX)/share/doc/afl
 MISC_PATH   = $(PREFIX)/share/afl
 
 # PROGS intentionally omit afl-as, which gets installed elsewhere.
-
-PROGS       = afl-gcc aflnet_share afl-fuzz afl-replay aflnet-replay afl-showmap afl-tmin afl-gotcpu afl-analyze
+PROGS       = afl-gcc afl-fuzz afl-replay aflnet-replay afl-showmap afl-tmin afl-gotcpu afl-analyze
 SH_PROGS    = afl-plot afl-cmin afl-whatsup
 
 CFLAGS     ?= -O3 -funroll-loops
@@ -44,7 +43,7 @@ endif
 
 COMM_HDR    = alloc-inl.h config.h debug.h types.h
 
-all: test_x86 $(PROGS) afl-as test_build all_done
+all: test_x86 aflnet_share $(PROGS) afl-as test_build all_done
 
 ifndef AFL_NO_X86
 
@@ -72,14 +71,14 @@ afl-as: afl-as.c afl-as.h $(COMM_HDR) | test_x86
 aflnet_share: aflnet_share.c aflnet_share.h log.h aflnet.h $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -c -o $@.o -lrt -lpthread
 
-afl-fuzz: afl-fuzz.c $(COMM_HDR) aflnet.o aflnet.h log.o log.h aflnet_share.o aflnet_share.h | test_x86
-	$(CC) $(CFLAGS) $@.c aflnet.o log.o aflnet_share.o -o $@ $(LDFLAGS)
+afl-fuzz: afl-fuzz.c $(COMM_HDR) log.o log.h aflnet.o aflnet.h aflnet_share.o aflnet_share.h | test_x86
+	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt $(LDFLAGS)
 
-afl-replay: afl-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
-	$(CC) $(CFLAGS) $@.c aflnet.o -o $@ $(LDFLAGS)
+afl-replay: afl-replay.c $(COMM_HDR) log.o log.h  aflnet.o aflnet.h aflnet_share.o aflnet_share.h | test_x86
+	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt $(LDFLAGS)
 
-aflnet-replay: aflnet-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
-	$(CC) $(CFLAGS) $@.c aflnet.o -o $@ $(LDFLAGS)
+aflnet-replay: aflnet-replay.c $(COMM_HDR) log.o log.h aflnet.o aflnet.h aflnet_share.o aflnet_share.h | test_x86
+	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt $(LDFLAGS)
 
 afl-showmap: afl-showmap.c $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)
