@@ -265,5 +265,6 @@ int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_
 void my_log_hex(char *m, int length);
 enum { NS_PER_SECOND = 1000000000 };
 void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td);
+struct timespec share_start_time;
 
 #endif

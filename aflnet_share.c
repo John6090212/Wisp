@@ -507,16 +507,16 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     };
     memcpy(&c.addr, addr, sizeof(struct sockaddr));
     log_trace("before my_connect while loop");
-    while(connect_queue_ptr->size == connect_queue_ptr->capacity);
+    while(connect_queue_ptr->size == connect_queue_ptr->capacity)
+        usleep(1);
     log_trace("after my_connect while_loop");
     if(pthread_mutex_lock(connect_lock) != 0) perror("pthread_mutex_lock failed");
     if(Connect_enqueue(connect_shm_ptr, connect_queue_ptr, c) == -1)
         log_error("connect queue enqueue failed");
     if(pthread_mutex_unlock(connect_lock) != 0) perror("pthread_mutex_unlock failed");
     log_trace("before accept_queue while loop");
-    while(accept_queue_ptr->size == 0){
+    while(accept_queue_ptr->size == 0)
         usleep(1);
-    }
     log_trace("after accept_queue while loop");
     if(pthread_mutex_lock(accept_lock) != 0) perror("pthread_mutex_lock failed");
     acception *a = Accept_dequeue(connect_shm_ptr, accept_queue_ptr);
@@ -647,7 +647,7 @@ int my_setsockopt(int sockfd, int level, int optname, const void *optval, sockle
 
 int my_poll_settimer(int timeout){
     timer_t timer = socket_cli.poll_timer;
-
+    
     struct itimerspec new_value = (struct itimerspec){
         .it_interval = (struct timespec){
             .tv_sec = 0,
@@ -661,8 +661,6 @@ int my_poll_settimer(int timeout){
 
     if(timer_settime(timer, 0, &new_value, NULL) == -1){
         log_error("poll settimer failed, %s", strerror(errno));
-        if(socket_cli.poll_timer == NULL)
-            log_debug("sock poll timer is null");
         return -1;
     }
 
@@ -714,6 +712,7 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
                 rv++;
                 return rv;
             } 
+            usleep(1);
         }
     }
 
@@ -771,6 +770,9 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
         if(__sync_bool_compare_and_swap(&socket_cli.is_socket_timeout, 1, 1)){
             socket_cli.is_socket_timeout = 0;
             clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(share_start_time, finish, &delta);
+            log_info("poll relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            log_info("poll clock time: %lld.%.9ld", finish.tv_sec, finish.tv_nsec);
             sub_timespec(start, finish, &delta);
             log_info("poll (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
             return 0;
@@ -798,11 +800,13 @@ int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len)
       tcp_len[0] = len / 256;
       tcp_len[1] = len % 256;
       n = my_send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
+      log_debug("my_send end, n=%d", n);
       if (n == 0) return byte_count;
       if (n == -1) return -1;
       while (byte_count < len) {
         usleep(10);
         n = my_send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
+        log_debug("my_send in while loop end, n=%d", n);
         if (n == 0) return byte_count;
         if (n == -1) return -1;
         byte_count += n;

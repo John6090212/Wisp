@@ -1060,7 +1060,7 @@ int send_over_network()
       return 1;
     }
   }
-  log_debug("start net_recv early");
+  //log_debug("start net_recv early");
   //retrieve early server response if needed
   if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
 
@@ -1069,9 +1069,9 @@ int send_over_network()
   messages_sent = 0;
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
-    log_trace("start net_send in for loop, size=%d", kl_val(it)->msize);
+    //log_trace("start net_send in for loop, size=%d", kl_val(it)->msize);
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
-    log_trace("net_send end, n=%d", n);
+    //log_trace("net_send end, n=%d", n);
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
@@ -1084,9 +1084,9 @@ int send_over_network()
 
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
-    log_debug("start my_net_recv in for loop");
+    //log_debug("start my_net_recv in for loop");
     if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
-      log_debug("jump to HANDLE_RESPONSES");
+      //log_debug("jump to HANDLE_RESPONSES");
       goto HANDLE_RESPONSES;
     }
 
@@ -1098,9 +1098,9 @@ int send_over_network()
     if (prev_buf_size == response_buf_size) likely_buggy = 1;
     else likely_buggy = 0;
   }
-  log_debug("go to HANDLE_RESPONSES after for loop");
+  //log_debug("go to HANDLE_RESPONSES after for loop");
 HANDLE_RESPONSES:
-  log_debug("start net_recv in HANDLE_RESPONSES");
+  //log_debug("start net_recv in HANDLE_RESPONSES");
   net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
 
   if (messages_sent > 0 && response_bytes != NULL) {
@@ -1112,9 +1112,12 @@ HANDLE_RESPONSES:
   while(1) {
     if (has_new_bits(session_virgin_bits) != 2) break;
   }
-  log_debug("start close");
+  //log_debug("start close");
   close(sockfd);
-
+  struct timespec finish, delta;
+  clock_gettime(CLOCK_REALTIME, &finish);
+  sub_timespec(share_start_time, finish, &delta);
+  log_info("close relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
   if (likely_buggy && false_negative_reduction) return 0;
 
   if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
@@ -1192,7 +1195,7 @@ int my_send_over_network()
       FATAL("Unable to bind socket on local source port");
     }
   }
-  log_trace("start my_connect");
+  //log_trace("start my_connect");
   if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
     //If it cannot connect to the server under test
     //try it again as the server initial startup time is varied
@@ -1258,11 +1261,16 @@ HANDLE_RESPONSES:
   }
   log_debug("start my_close");
   my_close(sockfd);
-
+  struct timespec finish, delta;
+  clock_gettime(CLOCK_REALTIME, &finish);
+  sub_timespec(share_start_time, finish, &delta);
+  log_info("my_close relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
   if (likely_buggy && false_negative_reduction) return 0;
 
-  if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
-
+  if (terminate_child && (child_pid > 0)) kill(child_pid, SIGKILL);
+  clock_gettime(CLOCK_REALTIME, &finish);
+  sub_timespec(share_start_time, finish, &delta);
+  log_info("first kill relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec); 
   //give the server a bit more time to gracefully terminate
   while(1) {
     int status = kill(child_pid, 0);
@@ -3412,7 +3420,15 @@ static u8 run_target(char** argv, u32 timeout) {
     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
   } else {
-    if (use_net) {log_trace("start send_over_network"); my_send_over_network(); log_trace("finish send_over_network");}
+    if (use_net) {
+      //log_trace("start send_over_network"); 
+      my_send_over_network(); 
+      struct timespec finish, delta;
+      clock_gettime(CLOCK_REALTIME, &finish);
+      sub_timespec(share_start_time, finish, &delta);
+      log_info("my_send_over_network relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+      //log_trace("finish send_over_network");
+    }
     s32 res;
 
     if ((res = read(fsrv_st_fd, &status, 4)) != 4) {
@@ -3460,6 +3476,8 @@ static u8 run_target(char** argv, u32 timeout) {
     kill_signal = WTERMSIG(status);
 
     if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
+
+    if (kill_signal == SIGKILL) return FAULT_NONE;
 
     if (kill_signal == SIGTERM) return FAULT_NONE;
 
@@ -8885,15 +8903,15 @@ static void save_cmdline(u32 argc, char** argv) {
 
 /* aflnet_share initialization */
 __attribute__((constructor(101))) void aflnet_share_init(void){
+  clock_gettime(CLOCK_REALTIME, &share_start_time);
   // initialize logging
   log_set_quiet(true);
-  
   char *log_name = getenv("aflnet_share_log");
   if(log_name){
-      FILE *fp = fopen((const char *)log_name, "a+");
-      log_add_fp(fp, LOG_DEBUG);
+      FILE *fp = fopen((const char *)log_name, "w+");
+      log_add_fp(fp, LOG_ERROR);
   }
-  log_trace("attribute init");
+  
   // initialize share memory
   shm_fd = shm_open("message_sm", O_CREAT | O_RDWR, 0666);
   if (shm_fd < 0){
@@ -8943,7 +8961,7 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
 
   // set signal handler for recv and send timeout
   signal(SIGUSR2, my_signal_handler);
-
+  
 }
 
 #ifndef AFL_LIB

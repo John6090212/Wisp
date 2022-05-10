@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include "alloc-inl.h"
 #include "aflnet.h"
+#include "aflnet_share.h"
 
 #define server_wait_usecs 10000
 
@@ -16,6 +17,69 @@ Optional:
 4. First response timeout (ms), default 1
 5. Follow-up responses timeout (us), default 1000
 */
+
+/* aflnet_share initialization */
+__attribute__((constructor(101))) void aflnet_share_init(void){
+  // initialize logging
+  log_set_quiet(true);
+  /*
+  char *log_name = getenv("aflnet_share_log");
+  if(log_name){
+      FILE *fp = fopen((const char *)log_name, "a+");
+      log_add_fp(fp, LOG_TRACE);
+  }*/
+  log_trace("attribute init");
+  // initialize share memory
+  shm_fd = shm_open("message_sm", O_CREAT | O_RDWR, 0666);
+  if (shm_fd < 0){
+      log_error("shm_open failed");
+      exit(999);
+  }
+  ftruncate(shm_fd, COMMUNICATE_SHM_SIZE);
+
+  shm_ptr = mmap(NULL, COMMUNICATE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+  if(shm_ptr == (void *)-1){
+      log_error("mmap failed");
+  }
+
+  // initialize connect share memory
+  connect_shm_fd = shm_open("connect_sm", O_CREAT | O_RDWR, 0666);
+  if (connect_shm_fd < 0){
+      log_error("shm_open failed");
+      exit(999);
+  }
+  ftruncate(connect_shm_fd, CONNECT_SHM_SIZE);
+
+  connect_shm_ptr = mmap(NULL, CONNECT_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, connect_shm_fd, 0);
+  if(connect_shm_ptr == (void *)-1){
+      log_error("mmap failed");
+  }
+  connect_queue_ptr = (connect_queue *)(connect_shm_ptr);
+  accept_queue_ptr = (accept_queue *)(connect_shm_ptr+sizeof(connect_queue));
+  connect_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue));
+  accept_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue)+sizeof(pthread_mutex_t));
+
+  // initialize socket_cli
+  memset(&socket_cli, 0, sizeof(mysocket));
+
+  // initialize close share memory
+  close_shm_fd = shm_open("close_sm", O_CREAT | O_RDWR, 0666);
+  if (close_shm_fd < 0){
+      log_error("shm_open failed");
+      exit(999);
+  }
+  ftruncate(close_shm_fd, CLOSE_SHM_SIZE);
+
+  close_shm_ptr = mmap(NULL, CLOSE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, close_shm_fd, 0);
+  if(close_shm_ptr == (void *)-1){
+      log_error("mmap failed");
+  }
+  close_arr = (close_unit *)close_shm_ptr;
+
+  // set signal handler for recv and send timeout
+  signal(SIGUSR2, my_signal_handler);
+
+}
 
 int main(int argc, char* argv[])
 {
@@ -69,7 +133,7 @@ int main(int argc, char* argv[])
 
   int sockfd;
   if ((!strcmp(argv[2], "DTLS12")) || (!strcmp(argv[2], "DNS")) || (!strcmp(argv[2], "SIP"))) {
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockfd = my_socket(AF_INET, SOCK_DGRAM, 0);
   } else {
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
   }
@@ -85,7 +149,7 @@ int main(int argc, char* argv[])
   timeout.tv_sec = 0;
   timeout.tv_usec = socket_timeout;
 
-  setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
+  my_setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
 
   memset(&serv_addr, '0', sizeof(serv_addr));
 
@@ -93,15 +157,15 @@ int main(int argc, char* argv[])
   serv_addr.sin_port = htons(portno);
   serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-  if(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+  if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
     //If it cannot connect to the server under test
     //try it again as the server initial startup time is varied
     for (n=0; n < 1000; n++) {
-      if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
+      if (my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
       usleep(1000);
     }
     if (n== 1000) {
-      close(sockfd);
+      my_close(sockfd);
       return 1;
     }
   }
@@ -117,16 +181,16 @@ int main(int argc, char* argv[])
       buf = (char *)ck_alloc(size);
       fread(buf, size, 1, fp);
 
-      if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
-      n = net_send(sockfd, timeout, buf,size);
+      if (my_net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
+      n = my_net_send(sockfd, timeout, buf,size);
       if (n != size) break;
 
-      if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
+      if (my_net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
     }
   }
 
   fclose(fp);
-  close(sockfd);
+  my_close(sockfd);
 
   //Extract response codes
   state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
