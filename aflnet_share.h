@@ -63,6 +63,9 @@ buffer *stream_dequeue(void *shm, share_queue *q, int len);
 int datagram_enqueue(void *shm, share_queue *q, my_message_t m);
 my_message_t *datagram_dequeue(void *shm, share_queue *q);
 
+int int_enqueue(void *shm, share_queue *q, int m);
+int int_dequeue(void *shm, share_queue *q);
+
 /* share_queue.h end */
 
 /* socket.h start */
@@ -94,6 +97,10 @@ struct mysocket {
     share_queue *response_queue;
     pthread_mutex_t *request_lock;
     pthread_mutex_t *response_lock;
+    // for aflnet response_bytes correction
+    int response_su_index;
+    share_queue *res_len_queue;
+    pthread_mutex_t *res_queue_lock;
     // GETFL and SETFL flags
     int file_status_flags;
     // for dnsmasq
@@ -162,6 +169,7 @@ typedef struct acception acception;
 struct acception{
     int client_fd;
     int share_unit_index;
+    int response_su_index;
 };
 
 typedef struct accept_queue accept_queue;
@@ -185,6 +193,7 @@ acception* Accept_dequeue(void *shm, accept_queue* queue);
 #define DATAGRAM_QUEUE_CAPACITY 20
 #define CONNECT_QUEUE_CAPACITY 20
 #define ACCEPT_QUEUE_CAPACITY 10
+#define INT_QUEUE_CAPACITY 7520
 // share memory size for share unit
 #define COMMUNICATE_SHM_SIZE 0x400000
 // share memory size for connect and accept 
@@ -192,7 +201,7 @@ acception* Accept_dequeue(void *shm, accept_queue* queue);
 // share memory size for close
 #define CLOSE_SHM_SIZE 0x4000
 // share queue number in share memory, an upper bound of max connections at a time of server
-#define SOCKET_NUM 10
+#define SOCKET_NUM 5
 
 // share memory for socket communication 
 int shm_fd;
@@ -248,7 +257,6 @@ int my_close(int fd);
 /* inet_client_shm.c end */
 
 /* function needed in modified send_over_network */
-
 int my_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int my_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 
@@ -258,6 +266,7 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout);
 int my_poll_settimer(int timeout);
 int my_poll_stoptimer(void);
 int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len);
+int my_single_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len);
 int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len);
 
 /* debug */

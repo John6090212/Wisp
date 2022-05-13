@@ -356,7 +356,9 @@ static inline u8 has_new_bits(u8* virgin_map);
 /* AFLNet-specific variables & functions */
 
 u32 server_wait_usecs = 10000;
-u32 poll_wait_msecs = 1;
+u32 poll_wait_msecs = 10;
+// for my_net_recv
+u32 last_poll_wait_msecs = 15;
 u32 socket_timeout_usecs = 1000;
 u8 net_protocol;
 u8* net_ip;
@@ -1208,9 +1210,9 @@ int my_send_over_network()
       return 1;
     }
   }
-  log_debug("start my_net_recv early");
+  //log_debug("start my_net_recv early");
   //retrieve early server response if needed
-  if (my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
+  //if (my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
 
   //write the request messages
   kliter_t(lms) *it;
@@ -1232,7 +1234,7 @@ int my_send_over_network()
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
     log_debug("start my_net_recv in for loop");
-    if (my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
+    if (my_single_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
       log_debug("jump to HANDLE_RESPONSES");
       goto HANDLE_RESPONSES;
     }
@@ -1248,10 +1250,45 @@ int my_send_over_network()
   log_debug("go to HANDLE_RESPONSES after for loop");
 HANDLE_RESPONSES:
   log_debug("start my_net_recv in HANDLE_RESPONSES");
-  my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
-
+  my_net_recv(sockfd, timeout, last_poll_wait_msecs, &response_buf, &response_buf_size);
+  struct timespec finish, delta;
+  // fix response_bytes for timeout my_single_net_recv
   if (messages_sent > 0 && response_bytes != NULL) {
     response_bytes[messages_sent - 1] = response_buf_size;
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(share_start_time, finish, &delta);
+    log_info("my fix start relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    bool already_log = false;
+    for(int i = 0; i < messages_sent; i++){
+      if(socket_cli.res_len_queue->current_size == 0){
+        if(!already_log){
+          log_info("res_len_queue size is not same as messages_sent, remain messages=%d", messages_sent-i);
+          already_log = true;
+        }
+        if(i > 0)
+          response_bytes[i] = response_bytes[i-1];
+        continue;
+      }
+      if(pthread_mutex_lock(socket_cli.res_queue_lock) != 0) log_error("pthread_mutex_lock res_queue_lock failed");
+      int m = int_dequeue(shm_ptr, socket_cli.res_len_queue);
+      if(pthread_mutex_unlock(socket_cli.res_queue_lock) != 0) log_error("pthread_mutex_unlock res_queue_lock failed");
+      if(m == -1){
+        log_error("int_dequeue failed");
+        break;
+      }
+      if(i == 0)
+        response_bytes[i] = m;
+      else if(i == messages_sent - 1){
+        if(response_bytes[i] < response_bytes[i-1] + m){
+          log_info("response_bytes in queue is greater than recv");
+          break;
+        }
+        response_bytes[i] = response_bytes[i-1] + m;
+      }
+      else
+        response_bytes[i] = response_bytes[i-1] + m;
+      log_trace("response_bytes[%d] = %d", i, response_bytes[i]);
+    }
   }
 
   //wait a bit letting the server to complete its remaining task(s)
@@ -1261,13 +1298,12 @@ HANDLE_RESPONSES:
   }
   log_debug("start my_close");
   my_close(sockfd);
-  struct timespec finish, delta;
   clock_gettime(CLOCK_REALTIME, &finish);
   sub_timespec(share_start_time, finish, &delta);
   log_info("my_close relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
   if (likely_buggy && false_negative_reduction) return 0;
 
-  if (terminate_child && (child_pid > 0)) kill(child_pid, SIGKILL);
+  if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
   clock_gettime(CLOCK_REALTIME, &finish);
   sub_timespec(share_start_time, finish, &delta);
   log_info("first kill relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec); 
@@ -3477,7 +3513,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
     if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
 
-    if (kill_signal == SIGKILL) return FAULT_NONE;
+    //if (kill_signal == SIGKILL) return FAULT_NONE;
 
     if (kill_signal == SIGTERM) return FAULT_NONE;
 

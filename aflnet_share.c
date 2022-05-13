@@ -109,6 +109,48 @@ my_message_t *datagram_dequeue(void *shm, share_queue *q){
     return m;    
 }
 
+int int_enqueue(void *shm, share_queue *q, int m){
+    int *m_arr = (int *)(shm+q->message_start_offset);
+    // queue is full
+    if (q->current_size == q->capacity){
+        return -1;
+    }
+    // queue is empty
+    if(q->front == -1){
+        q->front = q->rear = 0;
+        m_arr[q->rear] = m;
+    }
+    // normal condition
+    else{
+        q->rear = (q->rear + 1) % q->capacity;
+        m_arr[q->rear] = m;
+    }
+    q->current_size++;
+
+    return 0;
+}
+
+int int_dequeue(void *shm, share_queue *q){
+    int *m_arr = (int *)(shm+q->message_start_offset);
+    int m;
+    if(q->front == -1)
+        return -1;
+    
+    m = m_arr[q->front];
+    // reset front and rear if queue becomes empty
+    if(q->front == q->rear){
+        q->front = -1;
+        q->rear = -1;
+    }
+    // normal condition
+    else
+        q->front = (q->front + 1) % q->capacity;
+    
+    q->current_size--;
+
+    return m;    
+}
+
 /* share_queue.c end */
 
 /* queue.c start */
@@ -508,7 +550,7 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     memcpy(&c.addr, addr, sizeof(struct sockaddr));
     log_trace("before my_connect while loop");
     while(connect_queue_ptr->size == connect_queue_ptr->capacity)
-        usleep(1);
+        usleep(0);
     log_trace("after my_connect while_loop");
     if(pthread_mutex_lock(connect_lock) != 0) perror("pthread_mutex_lock failed");
     if(Connect_enqueue(connect_shm_ptr, connect_queue_ptr, c) == -1)
@@ -516,7 +558,7 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     if(pthread_mutex_unlock(connect_lock) != 0) perror("pthread_mutex_unlock failed");
     log_trace("before accept_queue while loop");
     while(accept_queue_ptr->size == 0)
-        usleep(1);
+        usleep(0);
     log_trace("after accept_queue while loop");
     if(pthread_mutex_lock(accept_lock) != 0) perror("pthread_mutex_lock failed");
     acception *a = Accept_dequeue(connect_shm_ptr, accept_queue_ptr);
@@ -533,6 +575,9 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
         socket_cli.response_queue = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].response_queue);
         socket_cli.request_lock = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].request_lock);
         socket_cli.response_lock = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].response_lock);
+        socket_cli.response_su_index = a->response_su_index;
+        socket_cli.res_len_queue = &(((share_unit *)shm_ptr)[socket_cli.response_su_index].request_queue);
+        socket_cli.res_queue_lock = &(((share_unit *)shm_ptr)[socket_cli.response_su_index].request_lock);
         free(a);
         log_trace("connect success");
         clock_gettime(CLOCK_REALTIME, &finish);
@@ -560,6 +605,7 @@ int my_socket(int domain, int type, int protocol){
         .msg_more_buf = NULL,
         .msg_more_size = 0,
         .share_unit_index = -1,
+        .response_su_index = -1,
         .file_status_flags = 0,
         .send_timeout = (struct timeval) {
             .tv_sec = 0,
@@ -692,12 +738,19 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
     struct timespec start, finish, delta;
     clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
-        log_error("socket not in use");
-        return -1;
+        log_error("poll socket not in use");
+        fds[0].revents = 32;
+        return 1;
     }
 
     int rv = 0;
     fds[0].revents = 0;
+
+    if(close_arr[socket_cli.share_unit_index].server_write || close_arr[socket_cli.share_unit_index].server_read){
+        log_info("poll after server shutdown or close socket");
+        fds[0].revents = fds[0].events;
+        return 1;
+    }
 
     if(timeout == -1){
         while(1){
@@ -712,7 +765,7 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
                 rv++;
                 return rv;
             } 
-            usleep(1);
+            usleep(0);
         }
     }
 
@@ -747,6 +800,20 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
     }
     
     while(1){
+        if(close_arr[socket_cli.share_unit_index].server_write || close_arr[socket_cli.share_unit_index].server_read){
+            log_info("poll after server shutdown or close socket");
+            if(my_poll_stoptimer() == -1)
+                return -1;
+            fds[0].revents = fds[0].events;
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(share_start_time, finish, &delta);
+            log_info("poll relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            log_info("poll clock time: %lld.%.9ld", finish.tv_sec, finish.tv_nsec);
+            sub_timespec(start, finish, &delta);
+            log_info("poll (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);            
+            return 1;
+        }
+
         if(fds[0].events & POLLIN && socket_cli.response_queue->current_size > 0){
             fds[0].revents |= POLLIN;
             rv++;
@@ -819,6 +886,48 @@ int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len)
   return byte_count;
 }
 
+int my_single_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len) {
+  struct timespec start, finish, delta;
+  clock_gettime(CLOCK_REALTIME, &start);
+  char temp_buf[1000];
+  int n;
+  struct pollfd pfd[1];
+  pfd[0].fd = sockfd;
+  pfd[0].events = POLLIN;
+  log_trace("my_poll start");
+  int rv = my_poll(pfd, 1, poll_w);
+  log_trace("my_poll end, rv=%d", rv);
+  my_setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
+  // data received
+  if (rv > 0) {
+    if (pfd[0].revents & POLLIN) {
+      log_debug("my_recv start");
+      n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
+      if ((n < 0) && (errno != EAGAIN)) {
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("my_single_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+        return 1;
+      }
+      log_debug("my_recv end, n=%d", n);
+      if (n > 0) {
+        *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
+        memcpy(&(*response_buf)[*len], temp_buf, n);
+        (*response_buf)[(*len) + n] = '\0';
+        *len = *len + n;
+      }
+    }
+  } else
+    if (rv < 0) // an error was returned
+      return 1;
+
+  clock_gettime(CLOCK_REALTIME, &finish);
+  sub_timespec(start, finish, &delta);
+  log_info("my_single_net_recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  // rv == 0 poll timeout or all data pending after poll has been received successfully
+  return 0;
+}
+
 int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len) {
   struct timespec start, finish, delta;
   clock_gettime(CLOCK_REALTIME, &start);
@@ -869,7 +978,7 @@ int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_
   sub_timespec(start, finish, &delta);
   log_info("my_net_recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
   // rv == 0 poll timeout or all data pending after poll has been received successfully
-  return 0;
+  return 0;  
 }
 
 /* for debug */
