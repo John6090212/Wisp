@@ -356,8 +356,9 @@ static inline u8 has_new_bits(u8* virgin_map);
 /* AFLNet-specific variables & functions */
 
 u32 server_wait_usecs = 10000;
-u32 poll_wait_msecs = 10;
+u32 poll_wait_msecs = 1;
 // for my_net_recv
+u32 my_poll_wait_msecs = 10;
 u32 last_poll_wait_msecs = 15;
 u32 socket_timeout_usecs = 1000;
 u8 net_protocol;
@@ -1116,10 +1117,10 @@ HANDLE_RESPONSES:
   }
   //log_debug("start close");
   close(sockfd);
-  struct timespec finish, delta;
-  clock_gettime(CLOCK_REALTIME, &finish);
-  sub_timespec(share_start_time, finish, &delta);
-  log_info("close relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  //struct timespec finish, delta;
+  //clock_gettime(CLOCK_REALTIME, &finish);
+  //sub_timespec(share_start_time, finish, &delta);
+  //log_info("close relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
   if (likely_buggy && false_negative_reduction) return 0;
 
   if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
@@ -1212,7 +1213,7 @@ int my_send_over_network()
   }
   //log_debug("start my_net_recv early");
   //retrieve early server response if needed
-  //if (my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
+  //if (my_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
 
   //write the request messages
   kliter_t(lms) *it;
@@ -1234,7 +1235,7 @@ int my_send_over_network()
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
     log_debug("start my_net_recv in for loop");
-    if (my_single_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
+    if (my_single_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) {
       log_debug("jump to HANDLE_RESPONSES");
       goto HANDLE_RESPONSES;
     }
@@ -3459,10 +3460,12 @@ static u8 run_target(char** argv, u32 timeout) {
     if (use_net) {
       //log_trace("start send_over_network"); 
       my_send_over_network(); 
+      /*
       struct timespec finish, delta;
       clock_gettime(CLOCK_REALTIME, &finish);
       sub_timespec(share_start_time, finish, &delta);
       log_info("my_send_over_network relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+      */
       //log_trace("finish send_over_network");
     }
     s32 res;
@@ -8939,15 +8942,15 @@ static void save_cmdline(u32 argc, char** argv) {
 
 /* aflnet_share initialization */
 __attribute__((constructor(101))) void aflnet_share_init(void){
-  clock_gettime(CLOCK_REALTIME, &share_start_time);
   // initialize logging
   log_set_quiet(true);
+  /*
   char *log_name = getenv("aflnet_share_log");
   if(log_name){
       FILE *fp = fopen((const char *)log_name, "w+");
       log_add_fp(fp, LOG_ERROR);
   }
-  
+  clock_gettime(CLOCK_REALTIME, &share_start_time);
   // initialize share memory
   shm_fd = shm_open("message_sm", O_CREAT | O_RDWR, 0666);
   if (shm_fd < 0){
@@ -8997,7 +9000,7 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
 
   // set signal handler for recv and send timeout
   signal(SIGUSR2, my_signal_handler);
-  
+  */
 }
 
 #ifndef AFL_LIB
