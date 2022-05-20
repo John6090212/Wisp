@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <poll.h>
+#include <sys/un.h>
 // for ck_realloc
 #include "alloc-inl.h"
 // for u32
@@ -97,10 +98,6 @@ struct mysocket {
     share_queue *response_queue;
     pthread_mutex_t *request_lock;
     pthread_mutex_t *response_lock;
-    // for aflnet response_bytes correction
-    int response_su_index;
-    share_queue *res_len_queue;
-    pthread_mutex_t *res_queue_lock;
     // GETFL and SETFL flags
     int file_status_flags;
     // for dnsmasq
@@ -169,7 +166,6 @@ typedef struct acception acception;
 struct acception{
     int client_fd;
     int share_unit_index;
-    int response_su_index;
 };
 
 typedef struct accept_queue accept_queue;
@@ -275,5 +271,11 @@ void my_log_hex(char *m, int length);
 enum { NS_PER_SECOND = 1000000000 };
 void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td);
 struct timespec share_start_time;
+#define PROFILING_TIME 0
+
+/* control socket */
+#define CONTROL_SOCKET_NAME "/tmp/control_sock"
+#define CONTROL_BUF_LEN 20
+#define CONTROL_SOCKET_TIMEOUT 25000
 
 #endif

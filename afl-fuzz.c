@@ -358,8 +358,8 @@ static inline u8 has_new_bits(u8* virgin_map);
 u32 server_wait_usecs = 10000;
 u32 poll_wait_msecs = 1;
 // for my_net_recv
-u32 my_poll_wait_msecs = 10;
-u32 last_poll_wait_msecs = 15;
+u32 my_poll_wait_msecs = 0;
+u32 last_poll_wait_msecs = 1;
 u32 socket_timeout_usecs = 1000;
 u8 net_protocol;
 u8* net_ip;
@@ -1159,6 +1159,28 @@ int my_send_over_network()
     response_bytes = NULL;
   }
 
+  // create control socket and wait server to connect
+  int control_server = -1;
+  control_server = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+  if(control_server < 0) {
+    log_error("control socket create failed");
+  }
+
+  struct sockaddr_un serveraddr;
+  memset(&serveraddr, 0, sizeof(serveraddr));
+  serveraddr.sun_family = AF_UNIX;
+  strncpy(serveraddr.sun_path, CONTROL_SOCKET_NAME, sizeof(serveraddr.sun_path)); 
+
+  // delete previous control socket
+  if(unlink(CONTROL_SOCKET_NAME) == -1)
+    log_error("first time create or unlink previous control socket failed");
+
+  if(bind(control_server, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1)
+    log_error("control socket bind failed");
+
+  if(listen(control_server, 1) < 0)
+    log_error("control socket listen failed");
+
   //Create a TCP/UDP socket
   int sockfd = -1;
   if (net_protocol == PRO_TCP)
@@ -1211,6 +1233,14 @@ int my_send_over_network()
       return 1;
     }
   }
+
+  int control_sock = accept(control_server, NULL, NULL);
+  if(control_sock == -1)
+    log_error("control socket accept failed");
+
+  char control_buf[CONTROL_BUF_LEN];
+  memset(control_buf, 0, CONTROL_BUF_LEN);
+
   //log_debug("start my_net_recv early");
   //retrieve early server response if needed
   //if (my_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
@@ -1230,6 +1260,22 @@ int my_send_over_network()
     //Jump out if something wrong leading to incomplete message sent
     if (n != kl_val(it)->msize) {
       goto HANDLE_RESPONSES;
+    }
+
+    timeout.tv_sec = 0;
+    timeout.tv_usec = CONTROL_SOCKET_TIMEOUT;
+    if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
+      log_error("control socket setsockopt failed");
+    // receive message from control socket
+    if((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0){
+      goto HANDLE_RESPONSES;
+    }
+    log_trace("control message length: %d", n);
+    if(n > 0 && (memcmp(control_buf, "malformed", n) == 0)){
+      response_bytes[messages_sent - 1] = response_buf_size;
+      likely_buggy = 1;
+      log_trace("malformed message received");
+      continue;
     }
 
     //retrieve server response
@@ -1256,40 +1302,6 @@ HANDLE_RESPONSES:
   // fix response_bytes for timeout my_single_net_recv
   if (messages_sent > 0 && response_bytes != NULL) {
     response_bytes[messages_sent - 1] = response_buf_size;
-    clock_gettime(CLOCK_REALTIME, &finish);
-    sub_timespec(share_start_time, finish, &delta);
-    log_info("my fix start relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
-    bool already_log = false;
-    for(int i = 0; i < messages_sent; i++){
-      if(socket_cli.res_len_queue->current_size == 0){
-        if(!already_log){
-          log_info("res_len_queue size is not same as messages_sent, remain messages=%d", messages_sent-i);
-          already_log = true;
-        }
-        if(i > 0)
-          response_bytes[i] = response_bytes[i-1];
-        continue;
-      }
-      if(pthread_mutex_lock(socket_cli.res_queue_lock) != 0) log_error("pthread_mutex_lock res_queue_lock failed");
-      int m = int_dequeue(shm_ptr, socket_cli.res_len_queue);
-      if(pthread_mutex_unlock(socket_cli.res_queue_lock) != 0) log_error("pthread_mutex_unlock res_queue_lock failed");
-      if(m == -1){
-        log_error("int_dequeue failed");
-        break;
-      }
-      if(i == 0)
-        response_bytes[i] = m;
-      else if(i == messages_sent - 1){
-        if(response_bytes[i] < response_bytes[i-1] + m){
-          log_info("response_bytes in queue is greater than recv");
-          break;
-        }
-        response_bytes[i] = response_bytes[i-1] + m;
-      }
-      else
-        response_bytes[i] = response_bytes[i-1] + m;
-      log_trace("response_bytes[%d] = %d", i, response_bytes[i]);
-    }
   }
 
   //wait a bit letting the server to complete its remaining task(s)
@@ -1299,15 +1311,21 @@ HANDLE_RESPONSES:
   }
   log_debug("start my_close");
   my_close(sockfd);
-  clock_gettime(CLOCK_REALTIME, &finish);
-  sub_timespec(share_start_time, finish, &delta);
-  log_info("my_close relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  close(control_server);
+  close(control_sock);
+  if(PROFILING_TIME){
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(share_start_time, finish, &delta);
+    log_info("my_close relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  }
   if (likely_buggy && false_negative_reduction) return 0;
 
   if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
-  clock_gettime(CLOCK_REALTIME, &finish);
-  sub_timespec(share_start_time, finish, &delta);
-  log_info("first kill relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec); 
+  if(PROFILING_TIME){
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(share_start_time, finish, &delta);
+    log_info("first kill relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec); 
+  }
   //give the server a bit more time to gracefully terminate
   while(1) {
     int status = kill(child_pid, 0);
@@ -8944,13 +8962,14 @@ static void save_cmdline(u32 argc, char** argv) {
 __attribute__((constructor(101))) void aflnet_share_init(void){
   // initialize logging
   log_set_quiet(true);
-  /*
+
   char *log_name = getenv("aflnet_share_log");
   if(log_name){
       FILE *fp = fopen((const char *)log_name, "w+");
       log_add_fp(fp, LOG_ERROR);
   }
-  clock_gettime(CLOCK_REALTIME, &share_start_time);
+  if(PROFILING_TIME)
+    clock_gettime(CLOCK_REALTIME, &share_start_time);
   // initialize share memory
   shm_fd = shm_open("message_sm", O_CREAT | O_RDWR, 0666);
   if (shm_fd < 0){
@@ -9000,7 +9019,6 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
 
   // set signal handler for recv and send timeout
   signal(SIGUSR2, my_signal_handler);
-  */
 }
 
 #ifndef AFL_LIB

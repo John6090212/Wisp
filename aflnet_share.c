@@ -397,7 +397,8 @@ int my_stoptimer(int is_send){
 
 ssize_t my_recv(int sockfd, void *buf, size_t len, int flags){
     struct timespec start, finish, delta;
-    clock_gettime(CLOCK_REALTIME, &start);
+    if(PROFILING_TIME)
+        clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
         log_error("socket not in use\n");
         return -1;
@@ -411,10 +412,12 @@ ssize_t my_recv(int sockfd, void *buf, size_t len, int flags){
     while(__sync_bool_compare_and_swap(&socket_cli.response_queue->current_size, 0, 0)){
         if(close_arr[socket_cli.share_unit_index].server_write){
             if(need_timeout && my_stoptimer(false) == -1)
-                return -1;    
-            clock_gettime(CLOCK_REALTIME, &finish);
-            sub_timespec(start, finish, &delta);
-            log_info("recv (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);        
+                return -1;   
+            if(PROFILING_TIME){     
+                clock_gettime(CLOCK_REALTIME, &finish);
+                sub_timespec(start, finish, &delta);
+                log_info("recv (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);        
+            }
             return 0;    
         }
 
@@ -440,9 +443,11 @@ ssize_t my_recv(int sockfd, void *buf, size_t len, int flags){
         if(__sync_bool_compare_and_swap(&socket_cli.is_socket_timeout, 1, 1)){
             socket_cli.is_socket_timeout = 0;
             errno = EWOULDBLOCK;
-            clock_gettime(CLOCK_REALTIME, &finish);
-            sub_timespec(start, finish, &delta);
-            log_info("recv (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            if(PROFILING_TIME){
+                clock_gettime(CLOCK_REALTIME, &finish);
+                sub_timespec(start, finish, &delta);
+                log_info("recv (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            }
             return -1;
         }
     }
@@ -464,15 +469,18 @@ ssize_t my_recv(int sockfd, void *buf, size_t len, int flags){
     free(b);
     if(pthread_mutex_unlock(socket_cli.response_lock) != 0) log_error("pthread_mutex_unlock response_lock failed");
 
-    clock_gettime(CLOCK_REALTIME, &finish);
-    sub_timespec(start, finish, &delta);
-    log_info("recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    if(PROFILING_TIME){
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    }
     return count;
 }
 
 ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
     struct timespec start, finish, delta;
-    clock_gettime(CLOCK_REALTIME, &start);
+    if(PROFILING_TIME)
+        clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
         log_error("socket not in use");
         return -1;
@@ -500,9 +508,11 @@ ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
         if(close_arr[socket_cli.share_unit_index].server_read){
             if(need_timeout && my_stoptimer(true) == -1)
                 return -1; 
-            clock_gettime(CLOCK_REALTIME, &finish);
-            sub_timespec(start, finish, &delta);
-            log_info("send (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            if(PROFILING_TIME){    
+                clock_gettime(CLOCK_REALTIME, &finish);
+                sub_timespec(start, finish, &delta);
+                log_info("send (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            }
             return 0;
         }
         
@@ -512,9 +522,11 @@ ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
         if(__sync_bool_compare_and_swap(&socket_cli.is_socket_timeout, 1, 1)){
             socket_cli.is_socket_timeout = 0;
             errno = EWOULDBLOCK;
-            clock_gettime(CLOCK_REALTIME, &finish);
-            sub_timespec(start, finish, &delta);
-            log_info("send (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            if(PROFILING_TIME){
+                clock_gettime(CLOCK_REALTIME, &finish);
+                sub_timespec(start, finish, &delta);
+                log_info("send (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            }
             return -1;
         }        
     }
@@ -530,15 +542,18 @@ ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
     count = stream_enqueue(shm_ptr, socket_cli.request_queue, (char *)buf, len);
     if(pthread_mutex_unlock(socket_cli.request_lock) != 0) log_error("pthread_mutex_unlock request_lock failed");
 
-    clock_gettime(CLOCK_REALTIME, &finish);
-    sub_timespec(start, finish, &delta);
-    log_info("send (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    if(PROFILING_TIME){
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("send (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    }
     return count;
 }
 
 int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     struct timespec start, finish, delta;
-    clock_gettime(CLOCK_REALTIME, &start);
+    if(PROFILING_TIME)
+        clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
         log_error("socket not initialized");
         return -1;
@@ -575,14 +590,13 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
         socket_cli.response_queue = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].response_queue);
         socket_cli.request_lock = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].request_lock);
         socket_cli.response_lock = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].response_lock);
-        socket_cli.response_su_index = a->response_su_index;
-        socket_cli.res_len_queue = &(((share_unit *)shm_ptr)[socket_cli.response_su_index].request_queue);
-        socket_cli.res_queue_lock = &(((share_unit *)shm_ptr)[socket_cli.response_su_index].request_lock);
         free(a);
         log_trace("connect success");
-        clock_gettime(CLOCK_REALTIME, &finish);
-        sub_timespec(start, finish, &delta);
-        log_info("connect time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+        if(PROFILING_TIME){
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("connect time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+        }
         return 0;
     }
     else{
@@ -593,7 +607,8 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
 
 int my_socket(int domain, int type, int protocol){
     struct timespec start, finish, delta;
-    clock_gettime(CLOCK_REALTIME, &start);
+    if(PROFILING_TIME)
+        clock_gettime(CLOCK_REALTIME, &start);
     socket_cli = (mysocket){
         .domain = domain,
         .type = type,
@@ -605,7 +620,6 @@ int my_socket(int domain, int type, int protocol){
         .msg_more_buf = NULL,
         .msg_more_size = 0,
         .share_unit_index = -1,
-        .response_su_index = -1,
         .file_status_flags = 0,
         .send_timeout = (struct timeval) {
             .tv_sec = 0,
@@ -620,16 +634,19 @@ int my_socket(int domain, int type, int protocol){
         .is_socket_timeout = 0,
         .poll_timer = NULL
     };
-    clock_gettime(CLOCK_REALTIME, &finish);
-    sub_timespec(start, finish, &delta);
-    log_info("socket time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
-    // return original_socket(domain, type, protocol);
+    if(PROFILING_TIME){
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("socket time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    }
+
     return 999;
 }
 
 int my_close(int fd){
     struct timespec start, finish, delta;
-    clock_gettime(CLOCK_REALTIME, &start);
+    if(PROFILING_TIME)
+        clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
         log_error("socket not in use");
         return -1;
@@ -655,9 +672,11 @@ int my_close(int fd){
 
     // clear socket_cli
     memset(&socket_cli, 0, sizeof(mysocket));
-    clock_gettime(CLOCK_REALTIME, &finish);
-    sub_timespec(start, finish, &delta);
-    log_info("close time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    if(PROFILING_TIME){
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(start, finish, &delta);
+        log_info("close time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    }
     return 0;
 }
 
@@ -736,7 +755,8 @@ int my_poll_stoptimer(void){
 
 int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
     struct timespec start, finish, delta;
-    clock_gettime(CLOCK_REALTIME, &start);
+    if(PROFILING_TIME)
+        clock_gettime(CLOCK_REALTIME, &start);
     if(socket_cli.in_use != 1){
         log_error("poll socket not in use");
         fds[0].revents = 32;
@@ -781,9 +801,11 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
     }
 
     if(timeout == 0 || rv > 0){
-        clock_gettime(CLOCK_REALTIME, &finish);
-        sub_timespec(start, finish, &delta);
-        log_info("poll (first rv>0) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);    
+        if(PROFILING_TIME){
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("poll (first rv>0) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);    
+        }
         return rv;
     }
     
@@ -805,12 +827,14 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
             if(my_poll_stoptimer() == -1)
                 return -1;
             fds[0].revents = fds[0].events;
-            clock_gettime(CLOCK_REALTIME, &finish);
-            sub_timespec(share_start_time, finish, &delta);
-            log_info("poll relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
-            log_info("poll clock time: %lld.%.9ld", finish.tv_sec, finish.tv_nsec);
-            sub_timespec(start, finish, &delta);
-            log_info("poll (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);            
+            if(PROFILING_TIME){
+                clock_gettime(CLOCK_REALTIME, &finish);
+                sub_timespec(share_start_time, finish, &delta);
+                log_info("poll relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+                log_info("poll clock time: %lld.%.9ld", finish.tv_sec, finish.tv_nsec);
+                sub_timespec(start, finish, &delta);
+                log_info("poll (server close) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);            
+            }
             return 1;
         }
 
@@ -828,20 +852,24 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
             if(my_poll_stoptimer() == -1)
                 return -1;
             
-            clock_gettime(CLOCK_REALTIME, &finish);
-            sub_timespec(start, finish, &delta);
-            log_info("poll (rv>0) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            if(PROFILING_TIME){
+                clock_gettime(CLOCK_REALTIME, &finish);
+                sub_timespec(start, finish, &delta);
+                log_info("poll (rv>0) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            }
             return rv;
         }
 
         if(__sync_bool_compare_and_swap(&socket_cli.is_socket_timeout, 1, 1)){
             socket_cli.is_socket_timeout = 0;
-            clock_gettime(CLOCK_REALTIME, &finish);
-            sub_timespec(share_start_time, finish, &delta);
-            log_info("poll relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
-            log_info("poll clock time: %lld.%.9ld", finish.tv_sec, finish.tv_nsec);
-            sub_timespec(start, finish, &delta);
-            log_info("poll (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            if(PROFILING_TIME){
+                clock_gettime(CLOCK_REALTIME, &finish);
+                sub_timespec(share_start_time, finish, &delta);
+                log_info("poll relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+                log_info("poll clock time: %lld.%.9ld", finish.tv_sec, finish.tv_nsec);
+                sub_timespec(start, finish, &delta);
+                log_info("poll (timeout) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+            }
             return 0;
         }
     }
@@ -851,7 +879,8 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
 
 int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
   struct timespec start, finish, delta;
-  clock_gettime(CLOCK_REALTIME, &start);
+  if(PROFILING_TIME)
+    clock_gettime(CLOCK_REALTIME, &start);
   unsigned int byte_count = 0;
   int n;
   struct pollfd pfd[1];
@@ -880,15 +909,18 @@ int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len)
       }
     }
   }
-  clock_gettime(CLOCK_REALTIME, &finish);
-  sub_timespec(start, finish, &delta);
-  log_info("my_net_send time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  if(PROFILING_TIME){
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(start, finish, &delta);
+    log_info("my_net_send time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  }
   return byte_count;
 }
 
 int my_single_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len) {
   struct timespec start, finish, delta;
-  clock_gettime(CLOCK_REALTIME, &start);
+  if(PROFILING_TIME)
+    clock_gettime(CLOCK_REALTIME, &start);
   char temp_buf[1000];
   int n;
   struct pollfd pfd[1];
@@ -904,9 +936,11 @@ int my_single_net_recv(int sockfd, struct timeval timeout, int poll_w, char **re
       log_debug("my_recv start");
       n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
       if ((n < 0) && (errno != EAGAIN)) {
-        clock_gettime(CLOCK_REALTIME, &finish);
-        sub_timespec(start, finish, &delta);
-        log_info("my_single_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+        if(PROFILING_TIME){  
+          clock_gettime(CLOCK_REALTIME, &finish);
+          sub_timespec(start, finish, &delta);
+          log_info("my_single_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+        }
         return 1;
       }
       log_debug("my_recv end, n=%d", n);
@@ -921,16 +955,19 @@ int my_single_net_recv(int sockfd, struct timeval timeout, int poll_w, char **re
     if (rv < 0) // an error was returned
       return 1;
 
-  clock_gettime(CLOCK_REALTIME, &finish);
-  sub_timespec(start, finish, &delta);
-  log_info("my_single_net_recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  if(PROFILING_TIME){
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(start, finish, &delta);
+    log_info("my_single_net_recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  }
   // rv == 0 poll timeout or all data pending after poll has been received successfully
   return 0;
 }
 
 int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len) {
   struct timespec start, finish, delta;
-  clock_gettime(CLOCK_REALTIME, &start);
+  if(PROFILING_TIME)
+    clock_gettime(CLOCK_REALTIME, &start);
   char temp_buf[1000];
   int n;
   struct pollfd pfd[1];
@@ -946,9 +983,11 @@ int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_
       log_debug("my_recv start");
       n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
       if ((n < 0) && (errno != EAGAIN)) {
-        clock_gettime(CLOCK_REALTIME, &finish);
-        sub_timespec(start, finish, &delta);
-        log_info("my_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+        if(PROFILING_TIME){
+          clock_gettime(CLOCK_REALTIME, &finish);
+          sub_timespec(start, finish, &delta);
+          log_info("my_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+        }
         return 1;
       }
       log_debug("my_recv end, n=%d", n);
@@ -962,9 +1001,11 @@ int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_
         n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
         log_debug("my_recv in while loop end, n=%d", n);
         if ((n < 0) && (errno != EAGAIN)) {
-          clock_gettime(CLOCK_REALTIME, &finish);
-          sub_timespec(start, finish, &delta);
-          log_info("my_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+          if(PROFILING_TIME){
+            clock_gettime(CLOCK_REALTIME, &finish);
+            sub_timespec(start, finish, &delta);
+            log_info("my_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+          }
           return 1;
         }
       }
@@ -974,9 +1015,11 @@ int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_
     if (rv < 0) // an error was returned
       return 1;
 
-  clock_gettime(CLOCK_REALTIME, &finish);
-  sub_timespec(start, finish, &delta);
-  log_info("my_net_recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  if(PROFILING_TIME){
+    clock_gettime(CLOCK_REALTIME, &finish);
+    sub_timespec(start, finish, &delta);
+    log_info("my_net_recv (normal) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+  }
   // rv == 0 poll timeout or all data pending after poll has been received successfully
   return 0;  
 }
