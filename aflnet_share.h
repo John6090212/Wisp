@@ -272,6 +272,7 @@ enum { NS_PER_SECOND = 1000000000 };
 void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td);
 struct timespec share_start_time;
 #define PROFILING_TIME 0
+#define USE_AFLNET_SHARE 1
 
 /* control socket */
 #define CONTROL_SOCKET_NAME "/tmp/control_sock"

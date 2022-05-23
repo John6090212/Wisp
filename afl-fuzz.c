@@ -3471,20 +3471,21 @@ static u8 run_target(char** argv, u32 timeout) {
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
   if (dumb_mode == 1 || no_forkserver) {
-    if (use_net) my_send_over_network();
+    if (use_net) USE_AFLNET_SHARE?my_send_over_network():send_over_network();
     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
   } else {
-    if (use_net) {
-      //log_trace("start send_over_network"); 
-      my_send_over_network(); 
-      /*
-      struct timespec finish, delta;
-      clock_gettime(CLOCK_REALTIME, &finish);
-      sub_timespec(share_start_time, finish, &delta);
-      log_info("my_send_over_network relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
-      */
-      //log_trace("finish send_over_network");
+    if (use_net) { 
+      if(USE_AFLNET_SHARE)
+        my_send_over_network(); 
+      else
+        send_over_network();
+      if(PROFILING_TIME){
+        struct timespec finish, delta;
+        clock_gettime(CLOCK_REALTIME, &finish);
+        sub_timespec(share_start_time, finish, &delta);
+        log_info("my_send_over_network relative time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+      }
     }
     s32 res;
 
@@ -4339,8 +4340,8 @@ keep_as_crash:
 
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/replayable-crashes/id:%06llu,sig:%02u,%s", out_dir,
-                        unique_crashes, kill_signal, describe_op(0));
+      fn = alloc_printf("%s/replayable-crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
+                        unique_crashes, get_cur_time() - start_time, kill_signal, describe_op(0));
 
 #else
 
@@ -8963,62 +8964,64 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
   // initialize logging
   log_set_quiet(true);
 
-  char *log_name = getenv("aflnet_share_log");
-  if(log_name){
-      FILE *fp = fopen((const char *)log_name, "w+");
-      log_add_fp(fp, LOG_ERROR);
-  }
-  if(PROFILING_TIME)
-    clock_gettime(CLOCK_REALTIME, &share_start_time);
-  // initialize share memory
-  shm_fd = shm_open("message_sm", O_CREAT | O_RDWR, 0666);
-  if (shm_fd < 0){
-      log_error("shm_open failed");
-      exit(999);
-  }
-  ftruncate(shm_fd, COMMUNICATE_SHM_SIZE);
+  if(USE_AFLNET_SHARE){
+    char *log_name = getenv("aflnet_share_log");
+    if(log_name){
+        FILE *fp = fopen((const char *)log_name, "w+");
+        log_add_fp(fp, LOG_ERROR);
+    }
+    if(PROFILING_TIME)
+      clock_gettime(CLOCK_REALTIME, &share_start_time);
+    // initialize share memory
+    shm_fd = shm_open("message_sm", O_CREAT | O_RDWR, 0666);
+    if (shm_fd < 0){
+        log_error("shm_open failed");
+        exit(999);
+    }
+    ftruncate(shm_fd, COMMUNICATE_SHM_SIZE);
 
-  shm_ptr = mmap(NULL, COMMUNICATE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-  if(shm_ptr == (void *)-1){
-      log_error("mmap failed");
+    shm_ptr = mmap(NULL, COMMUNICATE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if(shm_ptr == (void *)-1){
+        log_error("mmap failed");
+    }
+
+    // initialize connect share memory
+    connect_shm_fd = shm_open("connect_sm", O_CREAT | O_RDWR, 0666);
+    if (connect_shm_fd < 0){
+        log_error("shm_open failed");
+        exit(999);
+    }
+    ftruncate(connect_shm_fd, CONNECT_SHM_SIZE);
+
+    connect_shm_ptr = mmap(NULL, CONNECT_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, connect_shm_fd, 0);
+    if(connect_shm_ptr == (void *)-1){
+        log_error("mmap failed");
+    }
+    connect_queue_ptr = (connect_queue *)(connect_shm_ptr);
+    accept_queue_ptr = (accept_queue *)(connect_shm_ptr+sizeof(connect_queue));
+    connect_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue));
+    accept_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue)+sizeof(pthread_mutex_t));
+
+    // initialize socket_cli
+    memset(&socket_cli, 0, sizeof(mysocket));
+
+    // initialize close share memory
+    close_shm_fd = shm_open("close_sm", O_CREAT | O_RDWR, 0666);
+    if (close_shm_fd < 0){
+        log_error("shm_open failed");
+        exit(999);
+    }
+    ftruncate(close_shm_fd, CLOSE_SHM_SIZE);
+
+    close_shm_ptr = mmap(NULL, CLOSE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, close_shm_fd, 0);
+    if(close_shm_ptr == (void *)-1){
+        log_error("mmap failed");
+    }
+    close_arr = (close_unit *)close_shm_ptr;
+
+    // set signal handler for recv and send timeout
+    signal(SIGUSR2, my_signal_handler);
   }
-
-  // initialize connect share memory
-  connect_shm_fd = shm_open("connect_sm", O_CREAT | O_RDWR, 0666);
-  if (connect_shm_fd < 0){
-      log_error("shm_open failed");
-      exit(999);
-  }
-  ftruncate(connect_shm_fd, CONNECT_SHM_SIZE);
-
-  connect_shm_ptr = mmap(NULL, CONNECT_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, connect_shm_fd, 0);
-  if(connect_shm_ptr == (void *)-1){
-      log_error("mmap failed");
-  }
-  connect_queue_ptr = (connect_queue *)(connect_shm_ptr);
-  accept_queue_ptr = (accept_queue *)(connect_shm_ptr+sizeof(connect_queue));
-  connect_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue));
-  accept_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue)+sizeof(pthread_mutex_t));
-
-  // initialize socket_cli
-  memset(&socket_cli, 0, sizeof(mysocket));
-
-  // initialize close share memory
-  close_shm_fd = shm_open("close_sm", O_CREAT | O_RDWR, 0666);
-  if (close_shm_fd < 0){
-      log_error("shm_open failed");
-      exit(999);
-  }
-  ftruncate(close_shm_fd, CLOSE_SHM_SIZE);
-
-  close_shm_ptr = mmap(NULL, CLOSE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, close_shm_fd, 0);
-  if(close_shm_ptr == (void *)-1){
-      log_error("mmap failed");
-  }
-  close_arr = (close_unit *)close_shm_ptr;
-
-  // set signal handler for recv and send timeout
-  signal(SIGUSR2, my_signal_handler);
 }
 
 #ifndef AFL_LIB
