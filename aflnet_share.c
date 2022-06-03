@@ -460,13 +460,23 @@ ssize_t my_recv(int sockfd, void *buf, size_t len, int flags){
 
     if(pthread_mutex_lock(socket_cli.response_lock) != 0) log_error("pthread_mutex_lock response_lock failed");
     ssize_t count = 0;
-    buffer *b = stream_dequeue(shm_ptr, socket_cli.response_queue, len);
-    if(b->buf != NULL){
-        memcpy(buf, b->buf, b->length *sizeof(char));
-        count = b->length;
-        free(b->buf); 
+    if(socket_cli.type == SOCK_DGRAM){
+        my_message_t *m = datagram_dequeue(shm_ptr, socket_cli.response_queue);
+        if(m->length != 0){
+            memcpy(buf, m->buf, min(len,m->length));
+            count = (flags & MSG_TRUNC) ? m->length : min(len,m->length);
+        }
+        free(m);
     }
-    free(b);
+    else{
+        buffer *b = stream_dequeue(shm_ptr, socket_cli.response_queue, len);
+        if(b->buf != NULL){
+            memcpy(buf, b->buf, b->length *sizeof(char));
+            count = b->length;
+            free(b->buf); 
+        }
+        free(b);
+    }
     if(pthread_mutex_unlock(socket_cli.response_lock) != 0) log_error("pthread_mutex_unlock response_lock failed");
 
     if(PROFILING_TIME){
@@ -539,7 +549,18 @@ ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
     
     if(pthread_mutex_lock(socket_cli.request_lock) != 0) log_error("pthread_mutex_lock request_lock failed");
     ssize_t count = 0;
-    count = stream_enqueue(shm_ptr, socket_cli.request_queue, (char *)buf, len);
+    if(socket_cli.type == SOCK_DGRAM){
+        my_message_t m = {
+            .length = len,
+        };
+        if(len > MESSAGE_MAX_LENGTH)
+            log_error("need to increase MESSAGE_MAX_LENGTH, len=%d", len);
+        memcpy(m.buf, buf, min(len,MESSAGE_MAX_LENGTH));
+        if(datagram_enqueue(shm_ptr, socket_cli.request_queue, m) == 0)
+            count = min(len,MESSAGE_MAX_LENGTH);
+    }
+    else
+        count = stream_enqueue(shm_ptr, socket_cli.request_queue, (char *)buf, len);
     if(pthread_mutex_unlock(socket_cli.request_lock) != 0) log_error("pthread_mutex_unlock request_lock failed");
 
     if(PROFILING_TIME){
@@ -558,6 +579,9 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
         log_error("socket not initialized");
         return -1;
     }
+
+    if(socket_cli.is_udp)
+        return 0;
 
     connection c = (connection){
         .client_fd = sockfd
@@ -632,13 +656,17 @@ int my_socket(int domain, int type, int protocol){
         .send_timer = NULL,
         .recv_timer = NULL,
         .is_socket_timeout = 0,
-        .poll_timer = NULL
+        .poll_timer = NULL,
+        .is_udp = false
     };
     if(PROFILING_TIME){
         clock_gettime(CLOCK_REALTIME, &finish);
         sub_timespec(start, finish, &delta);
         log_info("socket time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
     }
+
+    if(server == TINYDTLS)
+        socket_cli.is_udp = true;
 
     return 999;
 }
@@ -891,15 +919,19 @@ int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len)
   my_setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
   if (rv > 0) {
     if (pfd[0].revents & POLLOUT) {
-      // send 2-byte dns query length for tcp
-      unsigned char tcp_len[2] = {0};
-      tcp_len[0] = len / 256;
-      tcp_len[1] = len % 256;
-      n = my_send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
-      log_debug("my_send end, n=%d", n);
-      if (n == 0) return byte_count;
-      if (n == -1) return -1;
+      if(server == DNSMASQ){
+        // send 2-byte dns query length for tcp
+        unsigned char tcp_len[2] = {0};
+        tcp_len[0] = len / 256;
+        tcp_len[1] = len % 256;
+        n = my_send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
+        log_debug("my_send end, n=%d", n);
+        if (n == 0) return byte_count;
+        if (n == -1) return -1;
+      }
       while (byte_count < len) {
+        if(socket_cli.is_udp && byte_count == MESSAGE_MAX_LENGTH)
+            break;
         usleep(10);
         n = my_send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
         log_debug("my_send in while loop end, n=%d", n);

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/time.h>
 #include "alloc-inl.h"
 #include "aflnet.h"
 #include "aflnet_share.h"
@@ -18,41 +19,97 @@ Optional:
 5. Follow-up responses timeout (us), default 1000
 */
 
+static unsigned long long get_cur_time(void) {
+
+  struct timeval tv;
+  struct timezone tz;
+
+  gettimeofday(&tv, &tz);
+
+  return (tv.tv_sec * 1000ULL) + (tv.tv_usec / 1000);
+
+}
+
 /* aflnet_share initialization */
 __attribute__((constructor(101))) void aflnet_share_init(void){
   // initialize logging
   log_set_quiet(true);
-  /*
-  char *log_name = getenv("aflnet_share_log");
-  if(log_name){
-      FILE *fp = fopen((const char *)log_name, "a+");
-      log_add_fp(fp, LOG_TRACE);
-  }*/
+
   // initialize share memory
+  char *use_share = getenv("USE_AFLNET_SHARE");
+  if(use_share && memcmp(use_share, "1", 1) == 0)
+    USE_AFLNET_SHARE = true;
+  else
+    USE_AFLNET_SHARE = false;
+
+  char *profile_time = getenv("PROFILING_TIME");
+  if(profile_time && memcmp(profile_time, "1", 1) == 0)
+    PROFILING_TIME = true;
+  else
+    PROFILING_TIME = false;
+
+  shm_name = NULL;
+  connect_shm_name = NULL;
+  close_shm_name = NULL;
+  control_sock_name = NULL;
+
+  server = TINYDTLS;
+
   if(USE_AFLNET_SHARE){
-    shm_fd = shm_open("message_sm", O_CREAT | O_RDWR, 0666);
-    if (shm_fd < 0){
-        log_error("shm_open failed");
-        exit(999);
+    /*
+    time_t cur_t = time(0);
+    struct tm* t = localtime(&cur_t);
+    char log_name[100] = {0};
+    snprintf(log_name, 100, "aflnet_replay_%04u-%02u-%02u-%02u:%02u:%02u.log", 
+      t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
+    FILE *fp = fopen((const char *)log_name, "w+");
+    if(fp == NULL){
+      log_error("fopen failed");
+      exit(999);
+    }
+    log_add_fp(fp, LOG_ERROR);
+    */
+
+    if(PROFILING_TIME)
+      clock_gettime(CLOCK_REALTIME, &share_start_time);
+
+    shm_name = (char *)malloc(50*sizeof(char));
+    if(shm_name == NULL){
+      log_error("shm_name malloc failed");
+      exit(999);
+    }
+    snprintf(shm_name, 50, "message_sm_%llu", get_cur_time());
+    setenv("AFLNET_SHARE_MESSAGE_SHM", shm_name, 1);
+    shm_fd = shm_open((const char *)shm_name, O_CREAT | O_RDWR, 0666);
+    if(shm_fd < 0){
+      log_error("shm_open failed");
+      exit(999);
     }
     ftruncate(shm_fd, COMMUNICATE_SHM_SIZE);
 
     shm_ptr = mmap(NULL, COMMUNICATE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if(shm_ptr == (void *)-1){
-        log_error("mmap failed");
+      log_error("mmap failed");
     }
 
     // initialize connect share memory
-    connect_shm_fd = shm_open("connect_sm", O_CREAT | O_RDWR, 0666);
-    if (connect_shm_fd < 0){
-        log_error("shm_open failed");
-        exit(999);
+    connect_shm_name = (char *)malloc(50*sizeof(char));
+    if(connect_shm_name == NULL){
+      log_error("connect_shm_name malloc failed");
+      exit(999);
+    }
+    snprintf(connect_shm_name, 50, "connect_sm_%llu", get_cur_time());
+    setenv("AFLNET_SHARE_CONNECT_SHM", connect_shm_name, 1);
+    connect_shm_fd = shm_open(connect_shm_name, O_CREAT | O_RDWR, 0666);
+    if(connect_shm_fd < 0){
+      log_error("connect_shm_open failed");
+      exit(999);
     }
     ftruncate(connect_shm_fd, CONNECT_SHM_SIZE);
 
     connect_shm_ptr = mmap(NULL, CONNECT_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, connect_shm_fd, 0);
     if(connect_shm_ptr == (void *)-1){
-        log_error("mmap failed");
+      log_error("mmap failed");
     }
     connect_queue_ptr = (connect_queue *)(connect_shm_ptr);
     accept_queue_ptr = (accept_queue *)(connect_shm_ptr+sizeof(connect_queue));
@@ -63,21 +120,36 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
     memset(&socket_cli, 0, sizeof(mysocket));
 
     // initialize close share memory
-    close_shm_fd = shm_open("close_sm", O_CREAT | O_RDWR, 0666);
-    if (close_shm_fd < 0){
-        log_error("shm_open failed");
-        exit(999);
+    close_shm_name = (char *)malloc(50*sizeof(char));
+    if(close_shm_name == NULL){
+      log_error("close_shm_name malloc failed");
+      exit(999);
+    }
+    snprintf(close_shm_name, 50, "close_sm_%llu", get_cur_time());
+    setenv("AFLNET_SHARE_CLOSE_SHM", close_shm_name, 1);    
+    close_shm_fd = shm_open(close_shm_name, O_CREAT | O_RDWR, 0666);
+    if(close_shm_fd < 0){
+      log_error("shm_open failed");
+      exit(999);
     }
     ftruncate(close_shm_fd, CLOSE_SHM_SIZE);
 
     close_shm_ptr = mmap(NULL, CLOSE_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, close_shm_fd, 0);
     if(close_shm_ptr == (void *)-1){
-        log_error("mmap failed");
+      log_error("mmap failed");
     }
     close_arr = (close_unit *)close_shm_ptr;
 
     // set signal handler for recv and send timeout
     signal(SIGUSR2, my_signal_handler);
+
+    control_sock_name = (char *)malloc(50*sizeof(char));
+    if(control_sock_name == NULL){
+      log_error("control_sock_name malloc failed");
+      exit(999);
+    }
+    snprintf(control_sock_name, 50, "/tmp/control_sock_%llu", get_cur_time());
+    setenv("CONTROL_SOCKET_NAME", control_sock_name, 1);
   }
 }
 
@@ -134,7 +206,10 @@ int main(int argc, char* argv[])
   int sockfd;
   //if ((!strcmp(argv[2], "DTLS12")) || (!strcmp(argv[2], "DNS")) || (!strcmp(argv[2], "SIP"))) {
   if ((!strcmp(argv[2], "DTLS12")) || (!strcmp(argv[2], "SIP"))) {
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(USE_AFLNET_SHARE)
+      sockfd = my_socket(AF_INET, SOCK_DGRAM, 0);
+    else
+      sockfd = socket(AF_INET, SOCK_DGRAM, 0);
   } else {
     if(USE_AFLNET_SHARE)
       sockfd = my_socket(AF_INET, SOCK_STREAM, 0);
@@ -175,10 +250,10 @@ int main(int argc, char* argv[])
     struct sockaddr_un serveraddr;
     memset(&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sun_family = AF_UNIX;
-    strncpy(serveraddr.sun_path, CONTROL_SOCKET_NAME, sizeof(serveraddr.sun_path)); 
+    strncpy(serveraddr.sun_path, control_sock_name, sizeof(serveraddr.sun_path)); 
 
     // delete previous control socket
-    if(unlink(CONTROL_SOCKET_NAME) == -1)
+    if(unlink(control_sock_name) == -1)
       log_error("first time create or unlink previous control socket failed");
 
     if(bind(control_server, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1)
@@ -224,6 +299,30 @@ int main(int argc, char* argv[])
   char control_buf[CONTROL_BUF_LEN];
   memset(control_buf, 0, CONTROL_BUF_LEN);
 
+  // get share unit index from udp server through control socket
+  if(socket_cli.type == SOCK_DGRAM){
+    timeout.tv_sec = 0;
+    timeout.tv_usec = CONTROL_SOCKET_TIMEOUT;
+    if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
+      log_error("control socket setsockopt failed");
+    // receive message from control socket
+    if((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0){
+      log_error("received share_unit_index failed, %s", strerror(errno));
+      exit(999);
+    }
+    log_trace("control message length: %d", n);
+    if(n > 0 && (memcmp(control_buf, "share_unit_index:", min(17,n)) == 0)){
+      int share_unix_index;
+      sscanf(control_buf, "share_unit_index:%d", &share_unix_index);
+      log_trace("share_unit_index: %d", share_unix_index);
+      socket_cli.share_unit_index = share_unix_index;
+      socket_cli.request_queue = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].request_queue);
+      socket_cli.response_queue = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].response_queue);
+      socket_cli.request_lock = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].request_lock);
+      socket_cli.response_lock = &(((share_unit *)shm_ptr)[socket_cli.share_unit_index].response_lock);
+    }
+  }
+
   //Send requests one by one
   //And save all the server responses
   while(!feof(fp)) {
@@ -244,7 +343,10 @@ int main(int argc, char* argv[])
         if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
           log_error("control socket setsockopt failed");
         // receive message from control socket
-        if((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0) break;
+        if((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0){ 
+          log_error("control socket recv failed, %s", strerror(errno));
+          break;
+        }
         if (my_single_net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
       }
       else{

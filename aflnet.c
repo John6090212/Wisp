@@ -1646,16 +1646,20 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
   setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
   if (rv > 0) {
     if (pfd[0].revents & POLLOUT) {
-      // send 2-byte dns query length for tcp
-      unsigned char tcp_len[2] = {0};
-      tcp_len[0] = len / 256;
-      tcp_len[1] = len % 256;
-      n = send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
-      if (n == 0) return byte_count;
-      if (n == -1) return -1;
+      if(server == DNSMASQ){
+        // send 2-byte dns query length for tcp
+        unsigned char tcp_len[2] = {0};
+        tcp_len[0] = len / 256;
+        tcp_len[1] = len % 256;
+        n = send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
+        if (n == 0) return byte_count;
+        if (n == -1) return -1;
+      }
       while (byte_count < len) {
         usleep(10);
         n = send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
+        if(n > 1000)
+          log_trace("send in while loop n = %d", n);
         if (n == 0) return byte_count;
         if (n == -1) return -1;
         byte_count += n;
@@ -1681,6 +1685,8 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
     if (pfd[0].revents & POLLIN) {
       //log_debug("recv start");
       n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
+      if(n > 44)
+        log_trace("recv n = %d", n);
       if ((n < 0) && (errno != EAGAIN)) {
         //log_trace("recv failed");
         //clock_gettime(CLOCK_REALTIME, &finish);
@@ -1688,7 +1694,6 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
         //log_info("net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
         return 1;
       }
-      //log_debug("recv end, n=%d", n);
       while (n > 0) {
         //log_trace("while start, n=%d", n);
         usleep(10);
@@ -1698,7 +1703,8 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
         *len = *len + n;
         //log_debug("start recv in while loop");
         n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
-        //log_debug("recv in while loop end, n=%d", n);
+        if(n > 44)
+          log_debug("recv in while loop end, n=%d", n);
         if ((n < 0) && (errno != EAGAIN)) {
           //log_trace("recv failed");
           //clock_gettime(CLOCK_REALTIME, &finish);

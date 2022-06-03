@@ -34,7 +34,7 @@
 /* share_queue.h start */
 #define min(a,b) (((a) < (b)) ? (a) : (b))
 #define max(a,b) (((a) > (b)) ? (a) : (b))
-#define MESSAGE_MAX_LENGTH 1500
+#define MESSAGE_MAX_LENGTH 65536
 
 typedef struct share_queue share_queue;
 typedef struct buffer buffer;
@@ -112,6 +112,8 @@ struct mysocket {
     timer_t recv_timer;
     timer_t poll_timer;
     int is_socket_timeout;
+    // for udp
+    bool is_udp;
 };
 
 /* socket.h end */
@@ -185,13 +187,13 @@ acception* Accept_dequeue(void *shm, accept_queue* queue);
 
 /* share.h start */
 
-#define STREAM_QUEUE_CAPACITY 30080
-#define DATAGRAM_QUEUE_CAPACITY 20
+#define DATAGRAM_QUEUE_CAPACITY 5
+#define STREAM_QUEUE_CAPACITY DATAGRAM_QUEUE_CAPACITY*sizeof(my_message_t)
 #define CONNECT_QUEUE_CAPACITY 20
 #define ACCEPT_QUEUE_CAPACITY 10
 #define INT_QUEUE_CAPACITY 7520
 // share memory size for share unit
-#define COMMUNICATE_SHM_SIZE 0x400000
+#define COMMUNICATE_SHM_SIZE (sizeof(share_unit)*SOCKET_NUM)
 // share memory size for connect and accept 
 #define CONNECT_SHM_SIZE 0x5000
 // share memory size for close
@@ -200,6 +202,7 @@ acception* Accept_dequeue(void *shm, accept_queue* queue);
 #define SOCKET_NUM 5
 
 // share memory for socket communication 
+char *shm_name;
 int shm_fd;
 void *shm_ptr;
 
@@ -214,6 +217,7 @@ struct share_unit {
 };
 
 // share memory for socket connection
+char *connect_shm_name;
 int connect_shm_fd;
 void *connect_shm_ptr;
 connect_queue *connect_queue_ptr;
@@ -230,6 +234,7 @@ struct close_unit {
 };
 
 // share memory for socket close
+char *close_shm_name;
 int close_shm_fd;
 void *close_shm_ptr;
 close_unit *close_arr;
@@ -271,12 +276,16 @@ void my_log_hex(char *m, int length);
 enum { NS_PER_SECOND = 1000000000 };
 void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td);
 struct timespec share_start_time;
-#define PROFILING_TIME 0
-#define USE_AFLNET_SHARE 1
+bool PROFILING_TIME;
+bool USE_AFLNET_SHARE;
 
 /* control socket */
+char *control_sock_name;
 #define CONTROL_SOCKET_NAME "/tmp/control_sock"
-#define CONTROL_BUF_LEN 20
+#define CONTROL_BUF_LEN 25
 #define CONTROL_SOCKET_TIMEOUT 25000
+
+// deal with some manual setting
+enum SERVER_TYPE {DNSMASQ, TINYDTLS, OTHER} server;
 
 #endif
