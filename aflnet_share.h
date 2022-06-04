@@ -34,7 +34,7 @@
 /* share_queue.h start */
 #define min(a,b) (((a) < (b)) ? (a) : (b))
 #define max(a,b) (((a) > (b)) ? (a) : (b))
-#define MESSAGE_MAX_LENGTH 65536
+#define MESSAGE_MAX_LENGTH 1500
 
 typedef struct share_queue share_queue;
 typedef struct buffer buffer;
@@ -187,7 +187,7 @@ acception* Accept_dequeue(void *shm, accept_queue* queue);
 
 /* share.h start */
 
-#define DATAGRAM_QUEUE_CAPACITY 5
+#define DATAGRAM_QUEUE_CAPACITY 50
 #define STREAM_QUEUE_CAPACITY DATAGRAM_QUEUE_CAPACITY*sizeof(my_message_t)
 #define CONNECT_QUEUE_CAPACITY 20
 #define ACCEPT_QUEUE_CAPACITY 10
@@ -278,6 +278,7 @@ void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td);
 struct timespec share_start_time;
 bool PROFILING_TIME;
 bool USE_AFLNET_SHARE;
+bool unlink_first_time;
 
 /* control socket */
 char *control_sock_name;

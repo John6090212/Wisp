@@ -1071,11 +1071,7 @@ int send_over_network()
   messages_sent = 0;
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
-    if(kl_val(it)->msize > 1000)
-      log_trace("start net_send in for loop, size=%d", kl_val(it)->msize);
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
-    if(n > 1000)
-      log_trace("net_send end, n=%d", n);
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
@@ -1172,8 +1168,11 @@ int my_send_over_network()
   serveraddr.sun_family = AF_UNIX;
   strncpy(serveraddr.sun_path, control_sock_name, sizeof(serveraddr.sun_path)); 
 
-  if(unlink(control_sock_name) == -1)
-    log_error("first time or unlink control socket failed, %s", strerror(errno));
+  if(unlink(control_sock_name) == -1 && !unlink_first_time){
+    log_error("unlink control socket failed, %s", strerror(errno));
+  }
+  if(unlink_first_time)
+    unlink_first_time = false;
 
   if(bind(control_server, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1)
     log_error("control socket bind failed, %s", strerror(errno));
@@ -1295,9 +1294,11 @@ int my_send_over_network()
     if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
       log_error("control socket setsockopt failed");
     // receive message from control socket
-    if((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0){
-      log_error("control socket recv failed, %s", strerror(errno));
-      goto HANDLE_RESPONSES;
+    while((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0){
+      if(errno != EINTR){
+        log_error("control socket recv failed, %s", strerror(errno));
+        goto HANDLE_RESPONSES;
+      }
     }
     log_trace("control message length: %d", n);
     if(n > 0 && (memcmp(control_buf, "malformed", n) == 0)){
@@ -1330,7 +1331,7 @@ HANDLE_RESPONSES:
   log_debug("start my_net_recv in HANDLE_RESPONSES");
   my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
   struct timespec finish, delta;
-  // fix response_bytes for timeout my_single_net_recv
+
   if (messages_sent > 0 && response_bytes != NULL) {
     response_bytes[messages_sent - 1] = response_buf_size;
   }
@@ -8048,7 +8049,7 @@ static void handle_stop_sig(int sig) {
       free(control_sock_name);
     }
 
-    kill(0, SIGKILL);
+    exit(0);
   }    
 }
 
@@ -9039,6 +9040,8 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
   control_sock_name = NULL;
 
   server = TINYDTLS;
+  unlink_first_time = true;
+
   time_t cur_t = time(0);
   struct tm* t = localtime(&cur_t);
   char log_name[100] = {0};

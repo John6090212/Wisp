@@ -539,6 +539,7 @@ ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
             }
             return -1;
         }        
+        sleep(0);
     }
     
     if(socket_cli.send_timer != NULL && need_timeout){
@@ -553,8 +554,8 @@ ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
         my_message_t m = {
             .length = len,
         };
-        if(len > MESSAGE_MAX_LENGTH)
-            log_error("need to increase MESSAGE_MAX_LENGTH, len=%d", len);
+        //if(len > MESSAGE_MAX_LENGTH)
+            //log_error("need to increase MESSAGE_MAX_LENGTH, len=%d", len);
         memcpy(m.buf, buf, min(len,MESSAGE_MAX_LENGTH));
         if(datagram_enqueue(shm_ptr, socket_cli.request_queue, m) == 0)
             count = min(len,MESSAGE_MAX_LENGTH);

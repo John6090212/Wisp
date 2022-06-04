@@ -1658,8 +1658,6 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
       while (byte_count < len) {
         usleep(10);
         n = send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
-        if(n > 1000)
-          log_trace("send in while loop n = %d", n);
         if (n == 0) return byte_count;
         if (n == -1) return -1;
         byte_count += n;
@@ -1685,8 +1683,6 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
     if (pfd[0].revents & POLLIN) {
       //log_debug("recv start");
       n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
-      if(n > 44)
-        log_trace("recv n = %d", n);
       if ((n < 0) && (errno != EAGAIN)) {
         //log_trace("recv failed");
         //clock_gettime(CLOCK_REALTIME, &finish);
@@ -1703,8 +1699,6 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
         *len = *len + n;
         //log_debug("start recv in while loop");
         n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
-        if(n > 44)
-          log_debug("recv in while loop end, n=%d", n);
         if ((n < 0) && (errno != EAGAIN)) {
           //log_trace("recv failed");
           //clock_gettime(CLOCK_REALTIME, &finish);
