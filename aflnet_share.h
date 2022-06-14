@@ -111,9 +111,11 @@ struct mysocket {
     timer_t send_timer;
     timer_t recv_timer;
     timer_t poll_timer;
+    timer_t connect_timer;
     int is_socket_timeout;
     // for udp
     bool is_udp;
+    bool connect_timeout;
 };
 
 /* socket.h end */
@@ -247,6 +249,7 @@ mysocket socket_cli;
 // for timeout
 void my_signal_handler(int signum);
 int my_createtimer(timer_t *timer);
+int my_connect_createtimer(timer_t *timer);
 int my_settimer(int is_send);
 int my_stoptimer(int is_send);
 ssize_t my_recv(int sockfd, void *buf, size_t len, int flags);
@@ -266,6 +269,8 @@ int my_setsockopt(int sockfd, int level, int optname, const void *optval, sockle
 int my_poll(struct pollfd *fds, nfds_t nfds, int timeout);
 int my_poll_settimer(int timeout);
 int my_poll_stoptimer(void);
+int my_connect_settimer(int timeout);
+int my_connect_stoptimer(void);
 int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len);
 int my_single_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len);
 int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len);
@@ -279,6 +284,7 @@ struct timespec share_start_time;
 bool PROFILING_TIME;
 bool USE_AFLNET_SHARE;
 bool unlink_first_time;
+unsigned long long MAX_OUT_BUF;
 
 /* control socket */
 char *control_sock_name;
@@ -287,6 +293,6 @@ char *control_sock_name;
 #define CONTROL_SOCKET_TIMEOUT 25000
 
 // deal with some manual setting
-enum SERVER_TYPE {DNSMASQ, TINYDTLS, OTHER} server;
+enum SERVER_TYPE {DNSMASQ, TINYDTLS, DCMQRSCP, OTHER} server;
 
 #endif

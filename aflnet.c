@@ -1064,7 +1064,7 @@ region_t *extract_requests_dtls12(unsigned char* buf, unsigned int buf_size, uns
   region_t *regions = NULL;
 
   unsigned int cur_start = 0;
-
+  //log_error("ck_realloc in extract_requests_dtls12");
    while (byte_count < buf_size) {
 
      //Check if the first three bytes are <valid_content_type><dtls-1.2>
@@ -1614,6 +1614,7 @@ region_t* convert_kl_messages_to_regions(klist_t(lms) *kl_messages, u32* region_
   u32 region_count = 1;
   s32 cur_start = 0, cur_end = 0;
   //Iterate through all messages in the linked list
+  //log_error("ck_realloc in convert_kl_messages_to_regions");
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages) && region_count <= max_count ; it = kl_next(it)) {
     regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
 
@@ -1681,17 +1682,17 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
   // data received
   if (rv > 0) {
     if (pfd[0].revents & POLLIN) {
-      //log_debug("recv start");
+      log_debug("recv start");
       n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
       if ((n < 0) && (errno != EAGAIN)) {
-        //log_trace("recv failed");
+        log_trace("recv failed");
         //clock_gettime(CLOCK_REALTIME, &finish);
         //sub_timespec(start, finish, &delta);
         //log_info("net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
         return 1;
       }
       while (n > 0) {
-        //log_trace("while start, n=%d", n);
+        log_trace("while start, n=%d", n);
         usleep(10);
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
         memcpy(&(*response_buf)[*len], temp_buf, n);
@@ -1700,7 +1701,7 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
         //log_debug("start recv in while loop");
         n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
         if ((n < 0) && (errno != EAGAIN)) {
-          //log_trace("recv failed");
+          log_trace("recv failed");
           //clock_gettime(CLOCK_REALTIME, &finish);
           //sub_timespec(start, finish, &delta);
           //log_info("net_recv (error in while) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
@@ -1834,7 +1835,7 @@ u8* state_sequence_to_string(unsigned int *stateSequence, unsigned int stateCoun
   u32 i = 0;
 
   u8 *out = NULL;
-
+  //log_error("ck_realloc in state_sequence_to_string");
   char strState[STATE_STR_LEN];
   size_t len = 0;
   for (i = 0; i < stateCount; i++) {

@@ -1072,6 +1072,7 @@ int send_over_network()
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+    log_trace("net_send n = %d", n);
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
@@ -1084,7 +1085,7 @@ int send_over_network()
 
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
-    //log_debug("start my_net_recv in for loop");
+    log_debug("start net_recv in for loop");
     if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
       //log_debug("jump to HANDLE_RESPONSES");
       goto HANDLE_RESPONSES;
@@ -1100,7 +1101,7 @@ int send_over_network()
   }
   //log_debug("go to HANDLE_RESPONSES after for loop");
 HANDLE_RESPONSES:
-  //log_debug("start net_recv in HANDLE_RESPONSES");
+  log_debug("start net_recv in HANDLE_RESPONSES");
   net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
 
   if (messages_sent > 0 && response_bytes != NULL) {
@@ -1221,11 +1222,11 @@ int my_send_over_network()
   if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
     //If it cannot connect to the server under test
     //try it again as the server initial startup time is varied
-    for (n=0; n < 1000; n++) {
+    for (n=0; n < 1; n++) {
       if (my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
-      usleep(1000);
+      // usleep(1000);
     }
-    if (n== 1000) {
+    if (n== 1) {
       my_close(sockfd);
       return 1;
     }
@@ -1271,6 +1272,10 @@ int my_send_over_network()
   //retrieve early server response if needed
   //if (my_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
 
+  struct timeval control_timeout;
+  control_timeout.tv_sec = 0;
+  control_timeout.tv_usec = CONTROL_SOCKET_TIMEOUT;
+
   //write the request messages
   kliter_t(lms) *it;
   messages_sent = 0;
@@ -1289,21 +1294,24 @@ int my_send_over_network()
       goto HANDLE_RESPONSES;
     }
 
-    timeout.tv_sec = 0;
-    timeout.tv_usec = CONTROL_SOCKET_TIMEOUT;
-    if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
+    if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&control_timeout, sizeof(control_timeout)) < 0)
       log_error("control socket setsockopt failed");
     // receive message from control socket
     while((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0){
+      if(server == DCMQRSCP && (errno == EAGAIN || errno == EWOULDBLOCK)){
+        log_error("control socket timeout");
+        break;
+      }
       if(errno != EINTR){
         log_error("control socket recv failed, %s", strerror(errno));
         goto HANDLE_RESPONSES;
       }
+      log_error("control socket recv interrupted by signal, recv message again");
+      if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
+        log_error("control socket setsockopt failed");
     }
     log_trace("control message length: %d", n);
     if(n > 0 && (memcmp(control_buf, "malformed", n) == 0)){
-      response_bytes[messages_sent - 1] = response_buf_size;
-      likely_buggy = 1;
       log_trace("malformed message received");
       response_bytes[messages_sent - 1] = response_buf_size;
       likely_buggy = 1;
@@ -1313,9 +1321,17 @@ int my_send_over_network()
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
     log_debug("start my_net_recv in for loop");
-    if (my_single_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) {
-      log_debug("jump to HANDLE_RESPONSES");
-      goto HANDLE_RESPONSES;
+    if(server == DCMQRSCP){
+      if (my_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) {
+        log_debug("jump to HANDLE_RESPONSES");
+        goto HANDLE_RESPONSES;
+      }
+    }
+    else{
+      if (my_single_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) {
+        log_debug("jump to HANDLE_RESPONSES");
+        goto HANDLE_RESPONSES;
+      }
     }
 
     //Update accumulated response buffer size
@@ -1330,12 +1346,13 @@ int my_send_over_network()
 HANDLE_RESPONSES:
   log_debug("start my_net_recv in HANDLE_RESPONSES");
   my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
+  
   struct timespec finish, delta;
 
   if (messages_sent > 0 && response_bytes != NULL) {
     response_bytes[messages_sent - 1] = response_buf_size;
   }
-
+  
   //wait a bit letting the server to complete its remaining task(s)
   memset(session_virgin_bits, 255, MAP_SIZE);
   while(1) {
@@ -1869,6 +1886,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
     fclose(fp);
 
     if (byte_count != len) PFATAL("AFLNet - Inconsistent file length '%s'", fname);
+    //log_error("start extract_requests in add_to_queue");
     q->regions = (*extract_requests)(buf, len, &q->region_count);
     ck_free(buf);
 
@@ -5622,6 +5640,12 @@ static void show_init_stats(void) {
 
 EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
+  // skip this mutation test case if out_buf is larger than threshold
+  if(MAX_OUT_BUF > 0 && len > MAX_OUT_BUF){
+    log_fatal("out_buf is larger than threshold, len=%d", len);
+    return 1;
+  }
+
   u8 fault;
 
   if (post_handler) {
@@ -5637,6 +5661,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   // parse the out_buf into messages
   u32 region_count;
+  //log_error("start extract_requests in common_fuzz_stuff");
   region_t *regions = (*extract_requests)(out_buf, len, &region_count);
   if (!region_count) PFATAL("AFLNet Region count cannot be Zero");
 
@@ -6207,6 +6232,7 @@ AFLNET_REGIONS_SELECTION:;
 
   u32 in_buf_size = 0;
   while (it != M2_next) {
+    //log_error("ck_realloc in in_buf");
     in_buf = (u8 *) ck_realloc (in_buf, in_buf_size + kl_val(it)->msize);
     if (!in_buf) PFATAL("AFLNet cannot allocate memory for in_buf");
     //Retrieve data from kl_messages to populate the in_buf
@@ -7710,7 +7736,7 @@ havoc_stage:
 
     /* out_buf might have been mangled a bit, so let's restore it to its
        original size and shape. */
-
+    //log_error("ck_realloc in if (temp_len < len)");
     if (temp_len < len) out_buf = ck_realloc(out_buf, len);
     temp_len = len;
     memcpy(out_buf, in_buf, len);
@@ -8031,22 +8057,18 @@ static void handle_stop_sig(int sig) {
     // unlink all the share memory
     if(shm_name){
       shm_unlink(shm_name);
-      free(shm_name);
     }
 
     if(connect_shm_name){
       shm_unlink(connect_shm_name);
-      free(connect_shm_name);
     }
 
     if(close_shm_name){
       shm_unlink(close_shm_name);
-      free(close_shm_name);
     }
 
     if(control_sock_name){
       unlink(control_sock_name);
-      free(control_sock_name);
     }
 
     exit(0);
@@ -9034,25 +9056,20 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
   else
     PROFILING_TIME = false;
 
+  char *out_buf_threshold = getenv("MAX_OUT_BUF");
+  if(out_buf_threshold){
+    MAX_OUT_BUF = atoll(out_buf_threshold);
+  }
+  else
+    MAX_OUT_BUF = INT_MAX;
+
   shm_name = NULL;
   connect_shm_name = NULL;
   close_shm_name = NULL;
   control_sock_name = NULL;
 
-  server = TINYDTLS;
+  server = DCMQRSCP;
   unlink_first_time = true;
-
-  time_t cur_t = time(0);
-  struct tm* t = localtime(&cur_t);
-  char log_name[100] = {0};
-  snprintf(log_name, 100, "aflnet_share_%04u-%02u-%02u-%02u:%02u:%02u.log", 
-    t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
-  FILE *fp = fopen((const char *)log_name, "w+");
-  if(fp == NULL){
-    log_error("fopen failed");
-    exit(999);
-  }
-  log_add_fp(fp, LOG_ERROR);
   
   if(USE_AFLNET_SHARE){
     time_t cur_t = time(0);
@@ -9140,6 +9157,7 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
 
     // set signal handler for recv and send timeout
     signal(SIGUSR2, my_signal_handler);
+    signal(SIGRTMIN, my_signal_handler);
 
     control_sock_name = (char *)malloc(50*sizeof(char));
     if(control_sock_name == NULL){
@@ -9148,6 +9166,19 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
     }
     snprintf(control_sock_name, 50, "/tmp/control_sock_%llu", get_cur_time());
     setenv("CONTROL_SOCKET_NAME", control_sock_name, 1);
+  }
+  else{
+    time_t cur_t = time(0);
+    struct tm* t = localtime(&cur_t);
+    char log_name[100] = {0};
+    snprintf(log_name, 100, "aflnet_share_%04u-%02u-%02u-%02u:%02u:%02u.log", 
+      t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
+    FILE *fp = fopen((const char *)log_name, "w+");
+    if(fp == NULL){
+      log_error("fopen failed");
+      exit(999);
+    }
+    log_add_fp(fp, LOG_TRACE);
   }
 }
 

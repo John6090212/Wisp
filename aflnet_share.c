@@ -328,6 +328,9 @@ void my_signal_handler(int signum){
     if(signum == SIGUSR2){
         __sync_val_compare_and_swap(&socket_cli.is_socket_timeout, 0, 1);
     }
+    if(signum == SIGRTMIN){
+        __sync_val_compare_and_swap(&socket_cli.connect_timeout, false, true);
+    }
 }
 
 int my_createtimer(timer_t *timer){
@@ -335,6 +338,16 @@ int my_createtimer(timer_t *timer){
         .sigev_value.sival_ptr = timer,
         .sigev_notify = SIGEV_SIGNAL,
         .sigev_signo = SIGUSR2
+    };
+
+    return timer_create(CLOCK_REALTIME, &evp, timer);
+}
+
+int my_connect_createtimer(timer_t *timer){
+    struct sigevent evp = (struct sigevent){
+        .sigev_value.sival_ptr = timer,
+        .sigev_notify = SIGEV_SIGNAL,
+        .sigev_signo = SIGRTMIN
     };
 
     return timer_create(CLOCK_REALTIME, &evp, timer);
@@ -592,17 +605,30 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     while(connect_queue_ptr->size == connect_queue_ptr->capacity)
         usleep(0);
     log_trace("after my_connect while_loop");
-    if(pthread_mutex_lock(connect_lock) != 0) perror("pthread_mutex_lock failed");
+    if(pthread_mutex_lock(connect_lock) != 0) log_error("pthread_mutex_lock failed, %s", strerror(errno));
     if(Connect_enqueue(connect_shm_ptr, connect_queue_ptr, c) == -1)
         log_error("connect queue enqueue failed");
-    if(pthread_mutex_unlock(connect_lock) != 0) perror("pthread_mutex_unlock failed");
+    if(pthread_mutex_unlock(connect_lock) != 0) log_error("pthread_mutex_unlock failed, %s", strerror(errno));
     log_trace("before accept_queue while loop");
-    while(accept_queue_ptr->size == 0)
+    if(socket_cli.connect_timer == NULL && my_connect_createtimer(&socket_cli.connect_timer) == -1){
+        log_error("connect_timer create failed");
+        return -1;
+    }
+    my_connect_settimer(13);
+    while(accept_queue_ptr->size == 0){
+        if(__sync_bool_compare_and_swap(&socket_cli.connect_timeout, true, true)){
+            socket_cli.connect_timeout = false;
+            log_error("my_connect accept_queue timeout");
+            return -1;
+        }
         usleep(0);
+    }
+    if(my_connect_stoptimer() == -1)
+        return -1;
     log_trace("after accept_queue while loop");
-    if(pthread_mutex_lock(accept_lock) != 0) perror("pthread_mutex_lock failed");
+    if(pthread_mutex_lock(accept_lock) != 0) log_error("pthread_mutex_lock failed, %s", strerror(errno));
     acception *a = Accept_dequeue(connect_shm_ptr, accept_queue_ptr);
-    if(pthread_mutex_unlock(accept_lock) != 0) perror("pthread_mutex_unlock failed");
+    if(pthread_mutex_unlock(accept_lock) != 0) log_error("pthread_mutex_unlock failed, %s", strerror(errno));
     
     if(a != NULL){
         if(a->client_fd != sockfd){
@@ -658,7 +684,9 @@ int my_socket(int domain, int type, int protocol){
         .recv_timer = NULL,
         .is_socket_timeout = 0,
         .poll_timer = NULL,
-        .is_udp = false
+        .connect_timer = NULL,
+        .is_udp = false,
+        .connect_timeout = false
     };
     if(PROFILING_TIME){
         clock_gettime(CLOCK_REALTIME, &finish);
@@ -687,16 +715,24 @@ int my_close(int fd){
 
     // close timer
     if(socket_cli.send_timer != NULL){
-        timer_delete(socket_cli.send_timer);
+        if(timer_delete(socket_cli.send_timer) == -1)
+            log_error("delete send_timer failed, %s", strerror(errno));
         socket_cli.send_timer = NULL;
     }
     if(socket_cli.recv_timer != NULL){
-        timer_delete(socket_cli.recv_timer);
-        socket_cli.send_timer = NULL;
+        if(timer_delete(socket_cli.recv_timer) == -1)
+            log_error("delete recv_timer failed, %s", strerror(errno));
+        socket_cli.recv_timer = NULL;
     }
     if(socket_cli.poll_timer != NULL){
-        timer_delete(socket_cli.poll_timer);
+        if(timer_delete(socket_cli.poll_timer) == -1)
+            log_error("delete poll_timer failed, %s", strerror(errno));    
         socket_cli.poll_timer = NULL;
+    }
+    if(socket_cli.connect_timer != NULL){
+        if(timer_delete(socket_cli.connect_timer) == -1)
+            log_error("delete connect_timer failed, %s", strerror(errno));
+        socket_cli.connect_timer = NULL;
     }
 
     // clear socket_cli
@@ -904,6 +940,49 @@ int my_poll(struct pollfd *fds, nfds_t nfds, int timeout){
     }
 
     return rv;
+}
+
+int my_connect_settimer(int timeout){
+    timer_t timer = socket_cli.connect_timer;
+    
+    struct itimerspec new_value = (struct itimerspec){
+        .it_interval = (struct timespec){
+            .tv_sec = 0,
+            .tv_nsec = 0
+        },
+        .it_value = (struct timespec){
+            .tv_sec = (time_t)(timeout / 1000),
+            .tv_nsec = (long)(timeout % 1000) * 1000000
+        }
+    };
+
+    if(timer_settime(timer, 0, &new_value, NULL) == -1){
+        log_error("connect settimer failed, %s", strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
+
+int my_connect_stoptimer(void){
+    timer_t timer = socket_cli.connect_timer;
+
+    struct itimerspec new_value = (struct itimerspec){
+        .it_interval = (struct timespec){
+            .tv_sec = 0,
+            .tv_nsec = 0
+        },
+        .it_value = (struct timespec){
+            .tv_sec = 0,
+            .tv_nsec = 0
+        }
+    };    
+    if(timer_settime(timer, TIMER_ABSTIME, &new_value, NULL) == -1){
+        log_error("connect stoptimer failed");
+        return -1;
+    }
+
+    return 0;
 }
 
 int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
