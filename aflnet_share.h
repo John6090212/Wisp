@@ -30,6 +30,8 @@
 #include "aflnet.h"
 // for logging
 #include "log.h"
+// for remove_directory
+#include <dirent.h>
 
 /* share_queue.h start */
 #define min(a,b) (((a) < (b)) ? (a) : (b))
@@ -290,9 +292,16 @@ unsigned long long MAX_OUT_BUF;
 char *control_sock_name;
 #define CONTROL_SOCKET_NAME "/tmp/control_sock"
 #define CONTROL_BUF_LEN 25
-#define CONTROL_SOCKET_TIMEOUT 25000
+int control_socket_timeout;
 
 // deal with some manual setting
 enum SERVER_TYPE {DNSMASQ, TINYDTLS, DCMQRSCP, OTHER} server;
+
+// for parallel fuzzing
+char *parallel_id;
+
+// for cleanup script
+int remove_directory(const char *path);
+#define DCMQRSCP_PATH "/home/johnhuang/Desktop/dcmtk/build/bin/ACME_STORE"
 
 #endif

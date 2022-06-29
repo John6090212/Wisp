@@ -995,7 +995,12 @@ int send_over_network()
   struct sockaddr_in local_serv_addr;
 
   //Clean up the server if needed
-  if (cleanup_script) system(cleanup_script);
+  if(server == DCMQRSCP && cleanup_script){
+    if(remove_directory(DCMQRSCP_PATH) == -1)
+      log_error("remove_directory failed");
+  }
+  else if(cleanup_script)
+    system(cleanup_script);
 
   //Wait a bit for the server initialization
   usleep(server_wait_usecs);
@@ -1140,7 +1145,12 @@ int my_send_over_network()
   struct sockaddr_in local_serv_addr;
 
   //Clean up the server if needed
-  if (cleanup_script) system(cleanup_script);
+  if(server == DCMQRSCP && cleanup_script){
+    if(remove_directory(DCMQRSCP_PATH) == -1)
+      log_error("remove_directory failed");
+  }
+  else if (cleanup_script)
+    system(cleanup_script);
 
   //Wait a bit for the server initialization
   usleep(server_wait_usecs);
@@ -1242,7 +1252,7 @@ int my_send_over_network()
   // get share unit index from udp server through control socket
   if(net_protocol == PRO_UDP){
     timeout.tv_sec = 0;
-    timeout.tv_usec = CONTROL_SOCKET_TIMEOUT;
+    timeout.tv_usec = control_socket_timeout;
     if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
       log_error("control socket setsockopt failed");
     // receive message from control socket
@@ -1274,7 +1284,7 @@ int my_send_over_network()
 
   struct timeval control_timeout;
   control_timeout.tv_sec = 0;
-  control_timeout.tv_usec = CONTROL_SOCKET_TIMEOUT;
+  control_timeout.tv_usec = control_socket_timeout;
 
   //write the request messages
   kliter_t(lms) *it;
@@ -1297,6 +1307,8 @@ int my_send_over_network()
     if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&control_timeout, sizeof(control_timeout)) < 0)
       log_error("control socket setsockopt failed");
     // receive message from control socket
+    //struct timespec control_start_time;
+    //clock_gettime(CLOCK_REALTIME, &control_start_time);
     while((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0){
       if(server == DCMQRSCP && (errno == EAGAIN || errno == EWOULDBLOCK)){
         log_error("control socket timeout");
@@ -1307,9 +1319,16 @@ int my_send_over_network()
         goto HANDLE_RESPONSES;
       }
       log_error("control socket recv interrupted by signal, recv message again");
-      if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
-        log_error("control socket setsockopt failed");
+      //if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
+        //log_error("control socket setsockopt failed");
     }
+    /*
+    struct timespec finish, delta;
+    if(n > 0){
+      clock_gettime(CLOCK_REALTIME, &finish);
+      sub_timespec(control_start_time, finish, &delta);
+      log_fatal("control socket recv time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+    }*/
     log_trace("control message length: %d", n);
     if(n > 0 && (memcmp(control_buf, "malformed", n) == 0)){
       log_trace("malformed message received");
@@ -9071,12 +9090,22 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
   server = DCMQRSCP;
   unlink_first_time = true;
   
+  parallel_id = getenv("PARALLEL_ID");
+  if(parallel_id == NULL)
+    log_error("not using parallel or PARALLEL_ID getenv failed");
+  else
+    log_trace("PARALLEL_ID = %s", parallel_id);
+
   if(USE_AFLNET_SHARE){
     time_t cur_t = time(0);
     struct tm* t = localtime(&cur_t);
     char log_name[100] = {0};
-    snprintf(log_name, 100, "aflnet_share_%04u-%02u-%02u-%02u:%02u:%02u.log", 
-      t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
+    if(parallel_id != NULL)
+      snprintf(log_name, 100, "aflnet_share_%04u-%02u-%02u-%02u:%02u:%02u_%s.log",
+        t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec, parallel_id);
+    else
+      snprintf(log_name, 100, "aflnet_share_%04u-%02u-%02u-%02u:%02u:%02u.log",
+        t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
     FILE *fp = fopen((const char *)log_name, "w+");
     if(fp == NULL){
       log_error("fopen failed");
@@ -9166,19 +9195,28 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
     }
     snprintf(control_sock_name, 50, "/tmp/control_sock_%llu", get_cur_time());
     setenv("CONTROL_SOCKET_NAME", control_sock_name, 1);
+
+    if (server == DCMQRSCP)
+      control_socket_timeout = 2300;
+    else
+      control_socket_timeout = 25000;
   }
   else{
     time_t cur_t = time(0);
     struct tm* t = localtime(&cur_t);
     char log_name[100] = {0};
-    snprintf(log_name, 100, "aflnet_share_%04u-%02u-%02u-%02u:%02u:%02u.log", 
-      t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
+    if(parallel_id != NULL)
+      snprintf(log_name, 100, "aflnet_share_%04u-%02u-%02u-%02u:%02u:%02u_%s.log",
+        t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec, parallel_id);
+    else
+      snprintf(log_name, 100, "aflnet_share_%04u-%02u-%02u-%02u:%02u:%02u.log",
+        t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
     FILE *fp = fopen((const char *)log_name, "w+");
     if(fp == NULL){
       log_error("fopen failed");
       exit(999);
     }
-    log_add_fp(fp, LOG_TRACE);
+    log_add_fp(fp, LOG_ERROR);
   }
 }
 

@@ -150,6 +150,8 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
     }
     snprintf(control_sock_name, 50, "/tmp/control_sock_%llu", get_cur_time());
     setenv("CONTROL_SOCKET_NAME", control_sock_name, 1);
+
+    control_socket_timeout = 25000;
   }
 }
 
@@ -302,7 +304,7 @@ int main(int argc, char* argv[])
   // get share unit index from udp server through control socket
   if(socket_cli.type == SOCK_DGRAM){
     timeout.tv_sec = 0;
-    timeout.tv_usec = CONTROL_SOCKET_TIMEOUT;
+    timeout.tv_usec = control_socket_timeout;
     if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
       log_error("control socket setsockopt failed");
     // receive message from control socket
@@ -339,7 +341,7 @@ int main(int argc, char* argv[])
         n = my_net_send(sockfd, timeout, buf,size);
         if (n != size) break;
         timeout.tv_sec = 0;
-        timeout.tv_usec = CONTROL_SOCKET_TIMEOUT;
+        timeout.tv_usec = control_socket_timeout;
         if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
           log_error("control socket setsockopt failed");
         // receive message from control socket
