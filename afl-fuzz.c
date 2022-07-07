@@ -1174,18 +1174,13 @@ int my_send_over_network()
     log_error("control socket create failed");
   }
 
-  struct sockaddr_un serveraddr;
-  memset(&serveraddr, 0, sizeof(serveraddr));
-  serveraddr.sun_family = AF_UNIX;
-  strncpy(serveraddr.sun_path, control_sock_name, sizeof(serveraddr.sun_path)); 
-
   if(unlink(control_sock_name) == -1 && !unlink_first_time){
     log_error("unlink control socket failed, %s", strerror(errno));
   }
   if(unlink_first_time)
     unlink_first_time = false;
 
-  if(bind(control_server, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1)
+  if(bind(control_server, (struct sockaddr *)&control_serveraddr, sizeof(control_serveraddr)) == -1)
     log_error("control socket bind failed, %s", strerror(errno));
 
   if(listen(control_server, 1) < 0)
@@ -9087,7 +9082,7 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
   close_shm_name = NULL;
   control_sock_name = NULL;
 
-  server = DCMQRSCP;
+  server = DNSMASQ;
   unlink_first_time = true;
   
   parallel_id = getenv("PARALLEL_ID");
@@ -9195,6 +9190,10 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
     }
     snprintf(control_sock_name, 50, "/tmp/control_sock_%llu", get_cur_time());
     setenv("CONTROL_SOCKET_NAME", control_sock_name, 1);
+
+    memset(&control_serveraddr, 0, sizeof(control_serveraddr));
+    control_serveraddr.sun_family = AF_UNIX;
+    strncpy(control_serveraddr.sun_path, control_sock_name, sizeof(control_serveraddr.sun_path)); 
 
     if (server == DCMQRSCP)
       control_socket_timeout = 2300;

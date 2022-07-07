@@ -152,6 +152,10 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
     setenv("CONTROL_SOCKET_NAME", control_sock_name, 1);
 
     control_socket_timeout = 25000;
+
+    memset(&control_serveraddr, 0, sizeof(control_serveraddr));
+    control_serveraddr.sun_family = AF_UNIX;
+    strncpy(control_serveraddr.sun_path, control_sock_name, sizeof(control_serveraddr.sun_path)); 
   }
 }
 
@@ -249,16 +253,11 @@ int main(int argc, char* argv[])
       log_error("control socket create failed");
     }
 
-    struct sockaddr_un serveraddr;
-    memset(&serveraddr, 0, sizeof(serveraddr));
-    serveraddr.sun_family = AF_UNIX;
-    strncpy(serveraddr.sun_path, control_sock_name, sizeof(serveraddr.sun_path)); 
-
     // delete previous control socket
     if(unlink(control_sock_name) == -1)
       log_error("first time create or unlink previous control socket failed");
 
-    if(bind(control_server, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1)
+    if(bind(control_server, (struct sockaddr *)&control_serveraddr, sizeof(control_serveraddr)) == -1)
       log_error("control socket bind failed");
 
     if(listen(control_server, 1) < 0)

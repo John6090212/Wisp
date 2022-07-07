@@ -293,6 +293,7 @@ char *control_sock_name;
 #define CONTROL_SOCKET_NAME "/tmp/control_sock"
 #define CONTROL_BUF_LEN 25
 int control_socket_timeout;
+struct sockaddr_un control_serveraddr;
 
 // deal with some manual setting
 enum SERVER_TYPE {DNSMASQ, TINYDTLS, DCMQRSCP, OTHER} server;

@@ -614,7 +614,10 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
         log_error("connect_timer create failed");
         return -1;
     }
-    my_connect_settimer(13);
+    if(server == DCMQRSCP)
+        my_connect_settimer(13);
+    else
+        my_connect_settimer(1000);
     while(accept_queue_ptr->size == 0){
         if(__sync_bool_compare_and_swap(&socket_cli.connect_timeout, true, true)){
             socket_cli.connect_timeout = false;
