@@ -72,13 +72,13 @@ aflnet_share: aflnet_share.c aflnet_share.h log.h aflnet.h $(COMM_HDR) | test_x8
 	$(CC) $(CFLAGS) $@.c -c -o $@.o -lrt -lpthread
 
 afl-fuzz: afl-fuzz.c $(COMM_HDR) log.o log.h aflnet.o aflnet.h aflnet_share.o aflnet_share.h | test_x86
-	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt $(LDFLAGS)
+	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt -lpthread $(LDFLAGS)
 
 afl-replay: afl-replay.c $(COMM_HDR) log.o log.h  aflnet.o aflnet.h aflnet_share.o aflnet_share.h | test_x86
-	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt $(LDFLAGS)
+	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt -lpthread $(LDFLAGS)
 
 aflnet-replay: aflnet-replay.c $(COMM_HDR) log.o log.h aflnet.o aflnet.h aflnet_share.o aflnet_share.h | test_x86
-	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt $(LDFLAGS)
+	$(CC) $(CFLAGS) $@.c log.o aflnet.o aflnet_share.o -o $@ -lrt -lpthread $(LDFLAGS)
 
 afl-showmap: afl-showmap.c $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)

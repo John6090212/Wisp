@@ -9,6 +9,7 @@
 #define server_wait_usecs 10000
 
 unsigned int* (*extract_response_codes)(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref) = NULL;
+u32 my_poll_wait_msecs = 0;
 
 /* Expected arguments:
 1. Path to the test case (e.g., crash-triggering input)
@@ -53,7 +54,7 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
   close_shm_name = NULL;
   control_sock_name = NULL;
 
-  server = TINYDTLS;
+  unlink_first_time = true;
 
   if(USE_AFLNET_SHARE){
     /*
@@ -72,6 +73,21 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
 
     if(PROFILING_TIME)
       clock_gettime(CLOCK_REALTIME, &share_start_time);
+
+    char *server_type = getenv("SERVER");
+    if(server_type == NULL){
+      log_error("SERVER getenv failed");
+      exit(999);
+    }
+
+    if(!strncmp(server_type, "DNSMASQ", 7))
+      server = DNSMASQ;
+    else if(!strncmp(server_type, "TINYDTLS", 8))
+      server = TINYDTLS;
+    else if(!strncmp(server_type, "DCMQRSCP", 8))
+      server = DCMQRSCP;
+    else 
+      server = OTHER;
 
     shm_name = (char *)malloc(50*sizeof(char));
     if(shm_name == NULL){
@@ -151,11 +167,39 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
     snprintf(control_sock_name, 50, "/tmp/control_sock_%llu", get_cur_time());
     setenv("CONTROL_SOCKET_NAME", control_sock_name, 1);
 
-    control_socket_timeout = 25000;
-
     memset(&control_serveraddr, 0, sizeof(control_serveraddr));
     control_serveraddr.sun_family = AF_UNIX;
     strncpy(control_serveraddr.sun_path, control_sock_name, sizeof(control_serveraddr.sun_path)); 
+
+    if (server == DCMQRSCP)
+      control_socket_timeout = 2300;
+    else
+      control_socket_timeout = 25000;
+  }
+}
+
+__attribute__((destructor(101))) void aflnet_share_cleanup(void){
+  if(USE_AFLNET_SHARE){
+    // unlink all the share memory
+    if(shm_name){
+      shm_unlink(shm_name);
+      free(shm_name);
+    }
+
+    if(connect_shm_name){
+      shm_unlink(connect_shm_name);
+      free(connect_shm_name);
+    }
+
+    if(close_shm_name){
+      shm_unlink(close_shm_name);
+      free(close_shm_name);
+    }
+
+    if(control_sock_name){
+      unlink(control_sock_name);
+      free(control_sock_name);
+    }
   }
 }
 
@@ -266,11 +310,11 @@ int main(int argc, char* argv[])
     if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
       //If it cannot connect to the server under test
       //try it again as the server initial startup time is varied
-      for (n=0; n < 1000; n++) {
+      for (n=0; n < 1; n++) {
         if (my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
-        usleep(1000);
+        //usleep(1000);
       }
-      if (n== 1000) {
+      if (n== 1) {
         my_close(sockfd);
         return 1;
       }
@@ -348,7 +392,10 @@ int main(int argc, char* argv[])
           log_error("control socket recv failed, %s", strerror(errno));
           break;
         }
-        if (my_single_net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
+        if(server == DCMQRSCP){
+          if (my_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) break;
+        }
+        if (my_single_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) break;
       }
       else{
         if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;

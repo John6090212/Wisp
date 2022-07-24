@@ -32,6 +32,7 @@
 #include "log.h"
 // for remove_directory
 #include <dirent.h>
+#include <pthread.h>
 
 /* share_queue.h start */
 #define min(a,b) (((a) < (b)) ? (a) : (b))
@@ -304,5 +305,11 @@ char *parallel_id;
 // for cleanup script
 int remove_directory(const char *path);
 #define DCMQRSCP_PATH "/home/johnhuang/Desktop/dcmtk/build/bin/ACME_STORE"
+
+// to record total execs
+unsigned int execs_last_hour;
+
+// reset connect queue and accept queue after connection failed
+void init_connect_accept_queue(void);
 
 #endif

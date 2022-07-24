@@ -1060,6 +1060,7 @@ int my_single_net_recv(int sockfd, struct timeval timeout, int poll_w, char **re
       }
       log_debug("my_recv end, n=%d", n);
       if (n > 0) {
+        //log_error("ck_realloc in my_single_net_recv");
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
         memcpy(&(*response_buf)[*len], temp_buf, n);
         (*response_buf)[(*len) + n] = '\0';
@@ -1108,6 +1109,7 @@ int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_
       log_debug("my_recv end, n=%d", n);
       while (n > 0) {
         usleep(10);
+        //log_error("ck_realloc in my_net_recv");
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
         memcpy(&(*response_buf)[*len], temp_buf, n);
         (*response_buf)[(*len) + n] = '\0';
@@ -1214,4 +1216,40 @@ int remove_directory(const char *path){
     
 
    return r;
+}
+
+void init_connect_accept_queue(void){
+    connect_queue con_queue = (connect_queue){
+        .front = 0,
+        .rear = CONNECT_QUEUE_CAPACITY - 1,
+        .size = 0,
+        .capacity = CONNECT_QUEUE_CAPACITY,
+        .queue_start_offset = sizeof(connect_queue)+sizeof(accept_queue)+2*sizeof(pthread_mutex_t)
+    };
+    connect_queue_ptr = (connect_queue *)connect_shm_ptr;
+    memcpy(connect_queue_ptr, &con_queue, sizeof(connect_queue));
+
+    accept_queue acc_queue = (accept_queue){
+        .front = 0,
+        .rear = ACCEPT_QUEUE_CAPACITY - 1,
+        .size = 0,
+        .capacity = ACCEPT_QUEUE_CAPACITY,
+        .queue_start_offset = sizeof(connect_queue)+sizeof(accept_queue)+2*sizeof(pthread_mutex_t)+CONNECT_QUEUE_CAPACITY*sizeof(connection)
+    };
+    accept_queue_ptr = (accept_queue *)(connect_shm_ptr+sizeof(connect_queue));
+    memcpy(accept_queue_ptr, &acc_queue, sizeof(accept_queue));
+
+    // initialize mutex lock for connect queue and accept queue
+    //initialize mutex attr
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    //lock owner dies without unlocking it, any future attempts to acquire lock on this mutex will succeed
+    pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+    
+    connect_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue));
+    if(pthread_mutex_init(connect_lock, &attr) != 0) log_error("pthread_mutex_init connect_lock failed");
+    
+    accept_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue)+sizeof(pthread_mutex_t));
+    if(pthread_mutex_init(accept_lock, &attr) != 0) log_error("pthread_mutex_init accept_lock failed");
 }

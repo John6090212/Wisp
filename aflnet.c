@@ -1122,6 +1122,7 @@ unsigned int* extract_response_codes_dtls12(unsigned char* buf, unsigned int buf
   unsigned int status_code = 0;
 
   state_count++;
+  //log_error("ck_realloc in extract_response_codes_dtls12, buf_size=%u", buf_size);
   state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
   state_sequence[state_count - 1] = 0; // initial status code is 0
 
@@ -1227,7 +1228,7 @@ unsigned int* extract_response_codes_dtls12(unsigned char* buf, unsigned int buf
       byte_count ++;
     }
   }
-
+  //log_fatal("state_count = %d", state_count);
   *state_count_ref = state_count;
   return state_sequence;
 }
@@ -1573,6 +1574,7 @@ u32 save_kl_messages_to_file(klist_t(lms) *kl_messages, u8 *fname, u8 replay_ena
   if (fd < 0) PFATAL("Unable to create file '%s'", fname);
 
   u32 message_count = 0;
+  //log_error("ck_realloc in save_kl_messages_to_file");
   //Iterate through all messages in the linked list
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages) && message_count < max_count; it = kl_next(it)) {
     message_size = kl_val(it)->msize;

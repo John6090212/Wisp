@@ -455,6 +455,7 @@ u32 get_state_index(u32 state_id) {
 void expand_was_fuzzed_map(u32 new_states, u32 new_qentries) {
   int i, j;
   //Realloc the memory
+  //log_error("ck_realloc in expand_was_fuzzed_map");
   was_fuzzed_map = (char **)ck_realloc(was_fuzzed_map, (fuzzed_map_states + new_states) * sizeof(char *));
   for (i = 0; i < fuzzed_map_states + new_states; i++)
     was_fuzzed_map[i] = (char *)ck_realloc(was_fuzzed_map[i], (fuzzed_map_qentries + new_qentries) * sizeof(char));
@@ -773,7 +774,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
 
   q->unique_state_count = get_unique_state_count(state_sequence, state_count);
-
+  //log_error("ck_realloc in update_state_aware_variables");
   if (is_state_sequence_interesting(state_sequence, state_count)) {
     //Save the current kl_messages to a file which can be used to replay the newly discovered paths on the ipsm
     u8 *temp_str = state_sequence_to_string(state_sequence, state_count);
@@ -781,7 +782,6 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
     save_kl_messages_to_file(kl_messages, fname, 1, messages_sent);
     ck_free(temp_str);
     ck_free(fname);
-
     //Update the IPSM graph
     if (state_count > 1) {
       unsigned int prevStateID = state_sequence[0];
@@ -1233,6 +1233,18 @@ int my_send_over_network()
     }
     if (n== 1) {
       my_close(sockfd);
+
+      if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
+      //give the server a bit more time to gracefully terminate
+      while(1) {
+        
+        int status = kill(child_pid, 0);
+        if ((status != 0) && (errno == ESRCH)) break;
+      }
+
+      //reset connect_accept queue
+      init_connect_accept_queue();
+      
       return 1;
     }
   }
@@ -1291,6 +1303,7 @@ int my_send_over_network()
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
+    //log_error("ck_realloc in my_send_over_network");
     response_bytes = (u32 *) ck_realloc(response_bytes, messages_sent * sizeof(u32));
 
     //Jump out if something wrong leading to incomplete message sent
@@ -5064,6 +5077,13 @@ static void show_stats(void) {
   u8  tmp[256];
 
   cur_ms = get_cur_time();
+
+  /* log total_execs */
+  unsigned int cur_hours = ((cur_ms - start_time) / (60 * 60 * 1000));
+  if(cur_hours > execs_last_hour){
+    log_fatal("total execs of %u hours = %llu", cur_hours, total_execs);
+    execs_last_hour = cur_hours;
+  }
 
   /* If not enough time has passed since last UI update, bail out. */
 
@@ -9056,6 +9076,8 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
   // initialize logging
   log_set_quiet(true);
 
+  execs_last_hour = 0;
+
   // check whether to use share version and whether to profile time
   char *use_share = getenv("USE_AFLNET_SHARE");
   if(use_share && memcmp(use_share, "1", 1) == 0){
@@ -9082,7 +9104,6 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
   close_shm_name = NULL;
   control_sock_name = NULL;
 
-  server = DNSMASQ;
   unlink_first_time = true;
   
   parallel_id = getenv("PARALLEL_ID");
@@ -9110,6 +9131,21 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
 
     if(PROFILING_TIME)
       clock_gettime(CLOCK_REALTIME, &share_start_time);
+
+    char *server_type = getenv("SERVER");
+    if(server_type == NULL){
+      log_error("SERVER getenv failed");
+      exit(999);
+    }
+
+    if(!strncmp(server_type, "DNSMASQ", 7))
+      server = DNSMASQ;
+    else if(!strncmp(server_type, "TINYDTLS", 8))
+      server = TINYDTLS;
+    else if(!strncmp(server_type, "DCMQRSCP", 8))
+      server = DCMQRSCP;
+    else 
+      server = OTHER;
 
     // initialize share memory
     shm_name = (char *)malloc(50*sizeof(char));
@@ -9201,6 +9237,7 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
       control_socket_timeout = 25000;
   }
   else{
+    server = OTHER;
     time_t cur_t = time(0);
     struct tm* t = localtime(&cur_t);
     char log_name[100] = {0};
