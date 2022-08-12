@@ -1224,16 +1224,21 @@ int my_send_over_network()
     }
   }
   //log_trace("start my_connect");
-  if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+  if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr), false) < 0) {
     //If it cannot connect to the server under test
     //try it again as the server initial startup time is varied
-    for (n=0; n < 1; n++) {
-      if (my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
+    int connect_times = 1;
+    //if(server == DCMQRSCP)
+      //connect_times = 152;
+    for (n=0; n < connect_times; n++) {
+      if (my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr), true) == 0) break;
       // usleep(1000);
     }
-    if (n== 1) {
+    if (n== connect_times) {
+      log_error("my_connect failed multiple times, terminate child");
       my_close(sockfd);
-
+      close(control_server);
+      /*
       if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
       //give the server a bit more time to gracefully terminate
       while(1) {
@@ -1241,12 +1246,18 @@ int my_send_over_network()
         int status = kill(child_pid, 0);
         if ((status != 0) && (errno == ESRCH)) break;
       }
-
+      */
       //reset connect_accept queue
-      init_connect_accept_queue();
+      empty_connect_accept_queue();
       
       return 1;
     }
+  }
+
+  // clear connect queue and accept queue
+  if(connect_queue_ptr->size != 0 || accept_queue_ptr->size != 0){
+    log_error("connect queue or accept queue not empty");
+    empty_connect_accept_queue();
   }
 
   int control_sock = accept(control_server, NULL, NULL);
@@ -9232,12 +9243,12 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
     strncpy(control_serveraddr.sun_path, control_sock_name, sizeof(control_serveraddr.sun_path)); 
 
     if (server == DCMQRSCP)
-      control_socket_timeout = 2300;
+      control_socket_timeout = 2750;
     else
       control_socket_timeout = 25000;
   }
   else{
-    server = OTHER;
+    server = TINYDTLS;
     time_t cur_t = time(0);
     struct tm* t = localtime(&cur_t);
     char log_name[100] = {0};

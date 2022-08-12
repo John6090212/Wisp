@@ -585,7 +585,7 @@ ssize_t my_send(int sockfd, const void *buf, size_t len, int flags){
     return count;
 }
 
-int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
+int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen, bool is_reconnect){
     struct timespec start, finish, delta;
     if(PROFILING_TIME)
         clock_gettime(CLOCK_REALTIME, &start);
@@ -597,25 +597,27 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     if(socket_cli.is_udp)
         return 0;
 
-    connection c = (connection){
-        .client_fd = sockfd
-    };
-    memcpy(&c.addr, addr, sizeof(struct sockaddr));
-    log_trace("before my_connect while loop");
-    while(connect_queue_ptr->size == connect_queue_ptr->capacity)
-        usleep(0);
-    log_trace("after my_connect while_loop");
-    if(pthread_mutex_lock(connect_lock) != 0) log_error("pthread_mutex_lock failed, %s", strerror(errno));
-    if(Connect_enqueue(connect_shm_ptr, connect_queue_ptr, c) == -1)
-        log_error("connect queue enqueue failed");
-    if(pthread_mutex_unlock(connect_lock) != 0) log_error("pthread_mutex_unlock failed, %s", strerror(errno));
-    log_trace("before accept_queue while loop");
+    if(!is_reconnect){
+        connection c = (connection){
+            .client_fd = sockfd
+        };
+        memcpy(&c.addr, addr, sizeof(struct sockaddr));
+        log_trace("before my_connect while loop");
+        while(connect_queue_ptr->size == connect_queue_ptr->capacity)
+            usleep(0);
+        log_trace("after my_connect while_loop");
+        if(pthread_mutex_lock(connect_lock) != 0) log_error("pthread_mutex_lock failed, %s", strerror(errno));
+        if(Connect_enqueue(connect_shm_ptr, connect_queue_ptr, c) == -1)
+            log_error("connect queue enqueue failed");
+        if(pthread_mutex_unlock(connect_lock) != 0) log_error("pthread_mutex_unlock failed, %s", strerror(errno));
+        log_trace("before accept_queue while loop");
+    }
     if(socket_cli.connect_timer == NULL && my_connect_createtimer(&socket_cli.connect_timer) == -1){
         log_error("connect_timer create failed");
         return -1;
     }
     if(server == DCMQRSCP)
-        my_connect_settimer(13);
+        my_connect_settimer(30);
     else
         my_connect_settimer(1000);
     while(accept_queue_ptr->size == 0){
@@ -1252,4 +1254,32 @@ void init_connect_accept_queue(void){
     
     accept_lock = (pthread_mutex_t *)(connect_shm_ptr+sizeof(connect_queue)+sizeof(accept_queue)+sizeof(pthread_mutex_t));
     if(pthread_mutex_init(accept_lock, &attr) != 0) log_error("pthread_mutex_init accept_lock failed");
+}
+
+void empty_connect_accept_queue(void){
+    // empty connect queue
+    while(connect_queue_ptr->size > 0){
+        if(pthread_mutex_lock(connect_lock) != 0){
+            log_error("pthread_mutex_lock failed, %s", strerror(errno));
+            init_connect_accept_queue();
+            return;
+        }
+        connection *c = Connect_dequeue(connect_shm_ptr, connect_queue_ptr);
+        if(c != NULL)
+            free(c);
+        if(pthread_mutex_unlock(connect_lock) != 0) log_error("pthread_mutex_unlock failed, %s", strerror(errno));
+    }
+
+    // empty accept queue
+    while(accept_queue_ptr->size > 0){
+        if(pthread_mutex_lock(accept_lock) != 0){
+            log_error("pthread_mutex_lock failed, %s", strerror(errno));
+            init_connect_accept_queue();
+            return;
+        } 
+        acception *a = Accept_dequeue(connect_shm_ptr, accept_queue_ptr);
+        if(a != NULL)
+            free(a);
+        if(pthread_mutex_unlock(accept_lock) != 0) log_error("pthread_mutex_unlock failed, %s", strerror(errno));
+    }
 }

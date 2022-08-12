@@ -307,11 +307,11 @@ int main(int argc, char* argv[])
     if(listen(control_server, 1) < 0)
       log_error("control socket listen failed");
 
-    if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+    if(my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr), false) < 0) {
       //If it cannot connect to the server under test
       //try it again as the server initial startup time is varied
       for (n=0; n < 1; n++) {
-        if (my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
+        if (my_connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr), true) == 0) break;
         //usleep(1000);
       }
       if (n== 1) {

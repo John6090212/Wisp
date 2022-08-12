@@ -1223,6 +1223,10 @@ unsigned int* extract_response_codes_dtls12(unsigned char* buf, unsigned int buf
       state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
       state_sequence[state_count - 1] = status_code;
       byte_count += record_length;
+      if(state_count == TINYDTLS_STATE_LIMIT){
+        log_error("exceed tinydtls state limit");
+        break;
+      }
     } else {
       // we shouldn't really be reaching this code
       byte_count ++;

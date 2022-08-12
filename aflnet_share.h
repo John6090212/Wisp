@@ -257,7 +257,7 @@ int my_settimer(int is_send);
 int my_stoptimer(int is_send);
 ssize_t my_recv(int sockfd, void *buf, size_t len, int flags);
 ssize_t my_send(int sockfd, const void *buf, size_t len, int flags);
-int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen, bool is_reconnect);
 int my_socket(int domain, int type, int protocol);
 int my_close(int fd);
 
@@ -287,7 +287,10 @@ struct timespec share_start_time;
 bool PROFILING_TIME;
 bool USE_AFLNET_SHARE;
 bool unlink_first_time;
+
+// for tinydtls realloc problem
 unsigned long long MAX_OUT_BUF;
+#define TINYDTLS_STATE_LIMIT 10000
 
 /* control socket */
 char *control_sock_name;
@@ -304,12 +307,14 @@ char *parallel_id;
 
 // for cleanup script
 int remove_directory(const char *path);
-#define DCMQRSCP_PATH "/home/johnhuang/Desktop/dcmtk/build/bin/ACME_STORE"
+#define DCMQRSCP_PATH "/home/johnhuang/Desktop/dcmqrscp/ACME_STORE"
 
 // to record total execs
 unsigned int execs_last_hour;
 
 // reset connect queue and accept queue after connection failed
 void init_connect_accept_queue(void);
+// clear connect queue and accept queue after connection end
+void empty_connect_accept_queue(void);
 
 #endif
