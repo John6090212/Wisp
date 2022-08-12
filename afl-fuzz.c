@@ -1260,6 +1260,24 @@ int my_send_over_network()
     empty_connect_accept_queue();
   }
 
+  // add poll for control server to avoid hang
+  struct pollfd pfd[1];
+  pfd[0].fd = sockfd;
+  pfd[0].events = POLLIN;
+  int rv = poll(pfd, 1, 25);
+  if(rv == 0){
+    my_close(sockfd);
+    close(control_server);
+    log_error("control server poll timeout");
+    return 1;
+  }
+  else if (rv == -1){
+    my_close(sockfd);
+    close(control_server);
+    log_error("control server poll error, %s", strerror(errno));
+    return 1;
+  }
+
   int control_sock = accept(control_server, NULL, NULL);
   if(control_sock == -1)
     log_error("control socket accept failed");
