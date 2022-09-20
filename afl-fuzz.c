@@ -350,8 +350,10 @@ enum {
 char** use_argv;  /* argument to run the target program. In vanilla AFL, this is a local variable in main. */
 /* add these declarations here so we can call these functions earlier */
 static u8 run_target(char** argv, u32 timeout);
+static u64 get_cur_time_us(void);
 static inline u32 UR(u32 limit);
 static inline u8 has_new_bits(u8* virgin_map);
+
 
 /* AFLNet-specific variables & functions */
 
@@ -995,11 +997,13 @@ int send_over_network()
   struct sockaddr_in local_serv_addr;
 
   //Clean up the server if needed
+  /*
   if(server == DCMQRSCP && cleanup_script){
     if(remove_directory(DCMQRSCP_PATH) == -1)
       log_error("remove_directory failed");
   }
-  else if(cleanup_script)
+  else*/
+  if(cleanup_script)
     system(cleanup_script);
 
   //Wait a bit for the server initialization
@@ -1069,15 +1073,30 @@ int send_over_network()
   }
   //log_debug("start net_recv early");
   //retrieve early server response if needed
-  if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
+  if(SPEEDUP_PROFILING) 
+    log_fatal("start early net_recv: %llu", get_cur_time_us());
+  if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)){ 
+    if(SPEEDUP_PROFILING) 
+      log_fatal("early net_recv failed, goto HANDLE_RESPONSES: %llu", get_cur_time_us());
+    goto HANDLE_RESPONSES;
+  }
+  if(SPEEDUP_PROFILING) 
+    log_fatal("early net_recv end: %llu", get_cur_time_us());
+
 
   //write the request messages
   kliter_t(lms) *it;
   messages_sent = 0;
+  if(SPEEDUP_PROFILING) 
+    log_fatal("start sending messages: %llu", get_cur_time_us());
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
+    if(SPEEDUP_PROFILING)
+      log_fatal("start net_send: %llu", get_cur_time_us());
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
-    log_trace("net_send n = %d", n);
+    if(SPEEDUP_PROFILING)
+      log_fatal("net_send end: %llu", get_cur_time_us());
+    //log_trace("net_send n = %d", n);
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
@@ -1085,16 +1104,23 @@ int send_over_network()
 
     //Jump out if something wrong leading to incomplete message sent
     if (n != kl_val(it)->msize) {
+      if(SPEEDUP_PROFILING)
+        log_fatal("incomplete message sent, goto HANDLE_RESPONSES: %llu", get_cur_time_us());
       goto HANDLE_RESPONSES;
     }
 
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
-    log_debug("start net_recv in for loop");
+    //log_debug("start net_recv in for loop");
+    if(SPEEDUP_PROFILING)
+      log_fatal("start net_recv: %llu", get_cur_time_us());
     if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
-      //log_debug("jump to HANDLE_RESPONSES");
+      if(SPEEDUP_PROFILING)
+        log_fatal("net_recv failed, goto HANDLE_RESPONSES: %llu", get_cur_time_us());
       goto HANDLE_RESPONSES;
     }
+    if(SPEEDUP_PROFILING)
+      log_fatal("net_recv end: %llu", get_cur_time_us());
 
     //Update accumulated response buffer size
     response_bytes[messages_sent - 1] = response_buf_size;
@@ -1103,12 +1129,17 @@ int send_over_network()
     //it could be a signal of a potentiall server crash, like the case of CVE-2019-7314
     if (prev_buf_size == response_buf_size) likely_buggy = 1;
     else likely_buggy = 0;
+    if(SPEEDUP_PROFILING)
+      log_fatal("sending round end: %llu", get_cur_time_us());
   }
   //log_debug("go to HANDLE_RESPONSES after for loop");
 HANDLE_RESPONSES:
-  log_debug("start net_recv in HANDLE_RESPONSES");
+  //log_debug("start net_recv in HANDLE_RESPONSES");
+  if(SPEEDUP_PROFILING)
+        log_fatal("end of sending messages: %llu", get_cur_time_us());
   net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
-
+  if(SPEEDUP_PROFILING)
+        log_fatal("end of last net_recv: %llu", get_cur_time_us());
   if (messages_sent > 0 && response_bytes != NULL) {
     response_bytes[messages_sent - 1] = response_buf_size;
   }
@@ -1235,7 +1266,7 @@ int my_send_over_network()
       // usleep(1000);
     }
     if (n== connect_times) {
-      log_error("my_connect failed multiple times, terminate child");
+      log_error("my_connect failed multiple times");
       my_close(sockfd);
       close(control_server);
       /*
@@ -1249,7 +1280,8 @@ int my_send_over_network()
       */
       //reset connect_accept queue
       empty_connect_accept_queue();
-      
+      if(SPEEDUP_PROFILING)
+        log_fatal("connect failed: %llu", get_cur_time_us());
       return 1;
     }
   }
@@ -1261,27 +1293,48 @@ int my_send_over_network()
   }
 
   // add poll for control server to avoid hang
+  if(SPEEDUP_PROFILING)
+    log_fatal("control socket waiting connection start: %llu", get_cur_time_us());
   struct pollfd pfd[1];
-  pfd[0].fd = sockfd;
+  pfd[0].fd = control_server;
   pfd[0].events = POLLIN;
   int rv = poll(pfd, 1, 25);
+  if(SPEEDUP_PROFILING)
+    log_fatal("control socket poll end: %llu", get_cur_time_us());
   if(rv == 0){
     my_close(sockfd);
     close(control_server);
+    if(SPEEDUP_PROFILING)
+      log_fatal("control server poll timeout: %llu", get_cur_time_us());
     log_error("control server poll timeout");
     return 1;
   }
   else if (rv == -1){
     my_close(sockfd);
     close(control_server);
+    if(SPEEDUP_PROFILING)
+      log_fatal("control server poll error: %llu", get_cur_time_us());
     log_error("control server poll error, %s", strerror(errno));
     return 1;
   }
+  else if(!(pfd[0].revents & POLLIN)){
+    my_close(sockfd);
+    close(control_server);
+    if(SPEEDUP_PROFILING)
+      log_fatal("control server client close connection during poll: %llu", get_cur_time_us());
+    log_error("control server client close connection during poll, %s", strerror(errno));
+    return 1;
+  }
 
+  if(SPEEDUP_PROFILING)
+    log_fatal("control socket accept start: %llu", get_cur_time_us());
   int control_sock = accept(control_server, NULL, NULL);
   if(control_sock == -1)
     log_error("control socket accept failed");
-
+  
+  if(SPEEDUP_PROFILING)
+    log_fatal("control socket waiting connection end: %llu", get_cur_time_us());
+  
   char control_buf[CONTROL_BUF_LEN];
   memset(control_buf, 0, CONTROL_BUF_LEN);
 
@@ -1325,10 +1378,16 @@ int my_send_over_network()
   //write the request messages
   kliter_t(lms) *it;
   messages_sent = 0;
-
+  if(SPEEDUP_PROFILING) 
+    log_fatal("start sending messages: %llu", get_cur_time_us());
+  
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
     log_trace("start my_net_send in for loop");
+    if(SPEEDUP_PROFILING)
+      log_fatal("start net_send: %llu", get_cur_time_us());
     n = my_net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+    if(SPEEDUP_PROFILING)
+      log_fatal("net_send end: %llu", get_cur_time_us());
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
@@ -1338,6 +1397,8 @@ int my_send_over_network()
     //Jump out if something wrong leading to incomplete message sent
     if (n != kl_val(it)->msize && !(socket_cli.is_udp && kl_val(it)->msize >= MESSAGE_MAX_LENGTH)) {
       log_error("my_net_send return value is not equal to message size, n = %d, kl_val(it)->msize = %d", n, kl_val(it)->msize);
+      if(SPEEDUP_PROFILING)
+        log_fatal("incomplete message sent, goto HANDLE_RESPONSES: %llu", get_cur_time_us());
       goto HANDLE_RESPONSES;
     }
 
@@ -1346,12 +1407,18 @@ int my_send_over_network()
     // receive message from control socket
     //struct timespec control_start_time;
     //clock_gettime(CLOCK_REALTIME, &control_start_time);
+    if(SPEEDUP_PROFILING)
+      log_fatal("control socket recv start: %llu", get_cur_time_us());
     while((n = recv(control_sock, control_buf, CONTROL_BUF_LEN, MSG_NOSIGNAL)) < 0){
-      if(server == DCMQRSCP && (errno == EAGAIN || errno == EWOULDBLOCK)){
+      if(errno == EAGAIN || errno == EWOULDBLOCK){
+        if(SPEEDUP_PROFILING)
+          log_fatal("control socket recv timeout: %llu", get_cur_time_us());
         log_error("control socket timeout");
         break;
       }
       if(errno != EINTR){
+        if(SPEEDUP_PROFILING)
+          log_fatal("control socket recv failed, goto HANDLE_RESPONSES: %llu", get_cur_time_us());
         log_error("control socket recv failed, %s", strerror(errno));
         goto HANDLE_RESPONSES;
       }
@@ -1359,6 +1426,8 @@ int my_send_over_network()
       //if(setsockopt(control_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
         //log_error("control socket setsockopt failed");
     }
+    if(SPEEDUP_PROFILING)
+      log_fatal("control socket recv end: %llu", get_cur_time_us());
     /*
     struct timespec finish, delta;
     if(n > 0){
@@ -1366,11 +1435,13 @@ int my_send_over_network()
       sub_timespec(control_start_time, finish, &delta);
       log_fatal("control socket recv time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
     }*/
-    log_trace("control message length: %d", n);
+    //log_trace("control message length: %d", n);
     if(n > 0 && (memcmp(control_buf, "malformed", n) == 0)){
-      log_trace("malformed message received");
+      //log_trace("malformed message received");
       response_bytes[messages_sent - 1] = response_buf_size;
       likely_buggy = 1;
+      if(SPEEDUP_PROFILING)
+          log_fatal("receive malformed control message: %llu", get_cur_time_us());
       continue;
     }
 
@@ -1378,17 +1449,27 @@ int my_send_over_network()
     u32 prev_buf_size = response_buf_size;
     log_debug("start my_net_recv in for loop");
     if(server == DCMQRSCP){
+      if(SPEEDUP_PROFILING)
+        log_fatal("start net_recv: %llu", get_cur_time_us());
       if (my_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) {
-        log_debug("jump to HANDLE_RESPONSES");
+        //log_debug("jump to HANDLE_RESPONSES");
+        if(SPEEDUP_PROFILING)
+          log_fatal("net_recv failed, goto HANDLE_RESPONSES: %llu", get_cur_time_us());
         goto HANDLE_RESPONSES;
       }
     }
     else{
+      if(SPEEDUP_PROFILING)
+        log_fatal("start net_recv: %llu", get_cur_time_us());
       if (my_single_net_recv(sockfd, timeout, my_poll_wait_msecs, &response_buf, &response_buf_size)) {
-        log_debug("jump to HANDLE_RESPONSES");
+        //log_debug("jump to HANDLE_RESPONSES");
+        if(SPEEDUP_PROFILING)
+          log_fatal("net_recv failed, goto HANDLE_RESPONSES: %llu", get_cur_time_us());
         goto HANDLE_RESPONSES;
       }
     }
+    if(SPEEDUP_PROFILING)
+      log_fatal("net_recv end: %llu", get_cur_time_us());
 
     //Update accumulated response buffer size
     response_bytes[messages_sent - 1] = response_buf_size;
@@ -1397,12 +1478,17 @@ int my_send_over_network()
     //it could be a signal of a potentiall server crash, like the case of CVE-2019-7314
     if (prev_buf_size == response_buf_size) likely_buggy = 1;
     else likely_buggy = 0;
+    if(SPEEDUP_PROFILING)
+      log_fatal("sending round end: %llu", get_cur_time_us());
   }
-  log_debug("go to HANDLE_RESPONSES after for loop");
+  //log_debug("go to HANDLE_RESPONSES after for loop");
 HANDLE_RESPONSES:
-  log_debug("start my_net_recv in HANDLE_RESPONSES");
+  //log_debug("start my_net_recv in HANDLE_RESPONSES");
+  if(SPEEDUP_PROFILING)
+    log_fatal("end of sending messages: %llu", get_cur_time_us());
   my_net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
-  
+  if(SPEEDUP_PROFILING)
+        log_fatal("end of last net_recv: %llu", get_cur_time_us());
   struct timespec finish, delta;
 
   if (messages_sent > 0 && response_bytes != NULL) {
@@ -1414,7 +1500,7 @@ HANDLE_RESPONSES:
   while(1) {
     if (has_new_bits(session_virgin_bits) != 2) break;
   }
-  log_debug("start my_close");
+  //log_debug("start my_close");
   my_close(sockfd);
   close(control_server);
   close(control_sock);
@@ -3582,10 +3668,20 @@ static u8 run_target(char** argv, u32 timeout) {
 
   } else {
     if (use_net) { 
-      if(USE_AFLNET_SHARE)
-        my_send_over_network(); 
-      else
+      if(USE_AFLNET_SHARE){
+        if(SPEEDUP_PROFILING)
+          log_fatal("start send_over_network: %llu", get_cur_time_us());
+        my_send_over_network();
+        if(SPEEDUP_PROFILING)
+          log_fatal("send_over_network end: %llu", get_cur_time_us());
+      } 
+      else{
+        if(SPEEDUP_PROFILING)
+          log_fatal("start send_over_network: %llu", get_cur_time_us());
         send_over_network();
+        if(SPEEDUP_PROFILING)
+          log_fatal("send_over_network end: %llu", get_cur_time_us());
+      }
       if(PROFILING_TIME){
         struct timespec finish, delta;
         clock_gettime(CLOCK_REALTIME, &finish);
@@ -3732,7 +3828,11 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     write_to_testcase(use_mem, q->len);
     //log_trace("start run_target");
+    if(SPEEDUP_PROFILING)
+      log_fatal("start run_target: %llu", get_cur_time_us());
     fault = run_target(argv, use_tmout);
+    if(SPEEDUP_PROFILING)
+      log_fatal("run_target end: %llu", get_cur_time_us());
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -3860,7 +3960,6 @@ static void perform_dry_run(char** argv) {
   u8* skip_crashes = getenv("AFL_SKIP_CRASHES");
 
   while (q) {
-
     u8* use_mem;
     u8  res;
     s32 fd;
@@ -4388,7 +4487,11 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
         u8 new_fault;
         write_to_testcase(mem, len);
+        if(SPEEDUP_PROFILING)
+          log_fatal("start run_target: %llu", get_cur_time_us());
         new_fault = run_target(argv, hang_tmout);
+        if(SPEEDUP_PROFILING)
+          log_fatal("run_target end: %llu", get_cur_time_us());
 
         /* A corner case that one user reported bumping into: increasing the
            timeout actually uncovers a crash. Make sure we don't discard it if
@@ -5109,7 +5212,7 @@ static void show_stats(void) {
 
   /* log total_execs */
   unsigned int cur_hours = ((cur_ms - start_time) / (60 * 60 * 1000));
-  if(cur_hours > execs_last_hour){
+  if(cur_hours > execs_last_hour && !SPEEDUP_PROFILING){
     log_fatal("total execs of %u hours = %llu", cur_hours, total_execs);
     execs_last_hour = cur_hours;
   }
@@ -5704,7 +5807,7 @@ static void show_init_stats(void) {
 EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   // skip this mutation test case if out_buf is larger than threshold
-  if(MAX_OUT_BUF > 0 && len > MAX_OUT_BUF){
+  if(MAX_OUT_BUF > 0 && len > MAX_OUT_BUF && !SPEEDUP_PROFILING){
     log_fatal("out_buf is larger than threshold, len=%d", len);
     return 1;
   }
@@ -5797,8 +5900,11 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
   } while(cur_it != M2_next);
 
   /* End of AFLNet code */
-
+  if(SPEEDUP_PROFILING)
+    log_fatal("start run_target: %llu", get_cur_time_us());
   fault = run_target(argv, exec_tmout);
+  if(SPEEDUP_PROFILING)
+    log_fatal("run_target end: %llu", get_cur_time_us());
 
   //Update fuzz count, no matter whether the generated test is interesting or not
   if (state_aware_mode) update_fuzzs();
@@ -8063,8 +8169,11 @@ static void sync_fuzzers(char** argv) {
         u32 region_count;
         regions = (*extract_requests)(mem, st.st_size, &region_count);
         kl_messages = construct_kl_messages(path, regions, region_count);
-
+        if(SPEEDUP_PROFILING)
+          log_fatal("start run_target: %llu", get_cur_time_us());
         fault = run_target(argv, exec_tmout);
+        if(SPEEDUP_PROFILING)
+          log_fatal("run_target end: %llu", get_cur_time_us());
 
         if (stop_soon) return;
 
@@ -9156,7 +9265,7 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
       log_error("fopen failed");
       exit(999);
     }
-    log_add_fp(fp, LOG_ERROR);
+    log_add_fp(fp, LOG_FATAL);
 
     if(PROFILING_TIME)
       clock_gettime(CLOCK_REALTIME, &share_start_time);
@@ -9266,7 +9375,21 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
       control_socket_timeout = 25000;
   }
   else{
-    server = TINYDTLS;
+    char *server_type = getenv("SERVER");
+    if(server_type == NULL){
+      log_error("SERVER getenv failed");
+      exit(999);
+    }
+
+    if(!strncmp(server_type, "DNSMASQ", 7))
+      server = DNSMASQ;
+    else if(!strncmp(server_type, "TINYDTLS", 8))
+      server = TINYDTLS;
+    else if(!strncmp(server_type, "DCMQRSCP", 8))
+      server = DCMQRSCP;
+    else 
+      server = OTHER;
+
     time_t cur_t = time(0);
     struct tm* t = localtime(&cur_t);
     char log_name[100] = {0};
@@ -9281,7 +9404,7 @@ __attribute__((constructor(101))) void aflnet_share_init(void){
       log_error("fopen failed");
       exit(999);
     }
-    log_add_fp(fp, LOG_ERROR);
+    log_add_fp(fp, LOG_FATAL);
   }
 }
 

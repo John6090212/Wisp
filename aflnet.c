@@ -10,6 +10,7 @@
 
 #include "alloc-inl.h"
 #include "aflnet.h"
+#include <sys/time.h>
 #include "aflnet_share.h"
 #include "log.h"
 
@@ -1640,6 +1641,17 @@ region_t* convert_kl_messages_to_regions(klist_t(lms) *kl_messages, u32* region_
   return regions;
 }
 
+static u64 get_cur_time_us(void) {
+
+  struct timeval tv;
+  struct timezone tz;
+
+  gettimeofday(&tv, &tz);
+
+  return (tv.tv_sec * 1000000ULL) + tv.tv_usec;
+
+}
+
 // Network communication functions
 
 int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
@@ -1658,7 +1670,11 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
         unsigned char tcp_len[2] = {0};
         tcp_len[0] = len / 256;
         tcp_len[1] = len % 256;
+        if(SPEEDUP_PROFILING)
+          log_fatal("length send start: %llu", get_cur_time_us());
         n = send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
+        if(SPEEDUP_PROFILING)
+          log_fatal("length send end: %llu", get_cur_time_us());
         if (n == 0) return byte_count;
         if (n == -1) return -1;
       }
@@ -1683,31 +1699,41 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
   pfd[0].fd = sockfd;
   pfd[0].events = POLLIN;
   int rv = poll(pfd, 1, poll_w);
+  if(SPEEDUP_PROFILING)
+    log_fatal("poll end time: %llu", get_cur_time_us());
   //log_trace("poll end, rv=%d", rv);
   setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
   // data received
   if (rv > 0) {
     if (pfd[0].revents & POLLIN) {
-      log_debug("recv start");
+      //log_debug("recv start");
       n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
+      if(SPEEDUP_PROFILING)
+        log_fatal("recv end: %llu", get_cur_time_us());
       if ((n < 0) && (errno != EAGAIN)) {
-        log_trace("recv failed");
+        //log_trace("recv failed");
         //clock_gettime(CLOCK_REALTIME, &finish);
         //sub_timespec(start, finish, &delta);
         //log_info("net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
         return 1;
       }
+      if(SPEEDUP_PROFILING)
+        log_fatal("recv while start: %llu", get_cur_time_us());
       while (n > 0) {
-        log_trace("while start, n=%d", n);
+        //log_trace("while start, n=%d", n);
+        if(SPEEDUP_PROFILING)
+          log_fatal("response_buf start: %llu", get_cur_time_us());
         usleep(10);
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
         memcpy(&(*response_buf)[*len], temp_buf, n);
         (*response_buf)[(*len) + n] = '\0';
         *len = *len + n;
+        if(SPEEDUP_PROFILING)
+          log_fatal("response_buf end: %llu", get_cur_time_us());
         //log_debug("start recv in while loop");
         n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
         if ((n < 0) && (errno != EAGAIN)) {
-          log_trace("recv failed");
+          //log_trace("recv failed");
           //clock_gettime(CLOCK_REALTIME, &finish);
           //sub_timespec(start, finish, &delta);
           //log_info("net_recv (error in while) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);

@@ -1,5 +1,16 @@
 #include "aflnet_share.h"
 
+static u64 get_cur_time_us(void) {
+
+  struct timeval tv;
+  struct timezone tz;
+
+  gettimeofday(&tv, &tz);
+
+  return (tv.tv_sec * 1000000ULL) + tv.tv_usec;
+
+}
+
 /* share_queue.c start */
 
 int stream_enqueue(void *shm, share_queue *q, char *c, int len){
@@ -1009,8 +1020,12 @@ int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len)
         unsigned char tcp_len[2] = {0};
         tcp_len[0] = len / 256;
         tcp_len[1] = len % 256;
+        if(SPEEDUP_PROFILING)
+          log_fatal("length send start: %llu", get_cur_time_us());
         n = my_send(sockfd, tcp_len, 2, MSG_NOSIGNAL);
-        log_debug("my_send end, n=%d", n);
+        if(SPEEDUP_PROFILING)
+          log_fatal("length send end: %llu", get_cur_time_us());
+        //log_debug("my_send end, n=%d", n);
         if (n == 0) return byte_count;
         if (n == -1) return -1;
       }
@@ -1019,7 +1034,7 @@ int my_net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len)
             break;
         usleep(10);
         n = my_send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
-        log_debug("my_send in while loop end, n=%d", n);
+        //log_debug("my_send in while loop end, n=%d", n);
         if (n == 0) return byte_count;
         if (n == -1) return -1;
         byte_count += n;
@@ -1043,24 +1058,28 @@ int my_single_net_recv(int sockfd, struct timeval timeout, int poll_w, char **re
   struct pollfd pfd[1];
   pfd[0].fd = sockfd;
   pfd[0].events = POLLIN;
-  log_trace("my_poll start");
+  //log_trace("my_poll start");
   int rv = my_poll(pfd, 1, poll_w);
-  log_trace("my_poll end, rv=%d", rv);
+  if(SPEEDUP_PROFILING)
+    log_fatal("poll end time: %llu", get_cur_time_us());
+  //log_trace("my_poll end, rv=%d", rv);
   my_setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
   // data received
   if (rv > 0) {
     if (pfd[0].revents & POLLIN) {
-      log_debug("my_recv start");
+      //log_debug("my_recv start");
       n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
+      if(SPEEDUP_PROFILING)
+        log_fatal("recv end: %llu", get_cur_time_us());
       if ((n < 0) && (errno != EAGAIN)) {
         if(PROFILING_TIME){  
           clock_gettime(CLOCK_REALTIME, &finish);
           sub_timespec(start, finish, &delta);
-          log_info("my_single_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
+          //log_info("my_single_net_recv (error) time: %d.%.9ld", (int)delta.tv_sec, delta.tv_nsec);
         }
         return 1;
       }
-      log_debug("my_recv end, n=%d", n);
+      //log_debug("my_recv end, n=%d", n);
       if (n > 0) {
         //log_error("ck_realloc in my_single_net_recv");
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
@@ -1091,15 +1110,19 @@ int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_
   struct pollfd pfd[1];
   pfd[0].fd = sockfd;
   pfd[0].events = POLLIN;
-  log_trace("my_poll start");
+  //log_trace("my_poll start");
   int rv = my_poll(pfd, 1, poll_w);
-  log_trace("my_poll end, rv=%d", rv);
+  if(SPEEDUP_PROFILING)
+    log_fatal("poll end time: %llu", get_cur_time_us());
+  //log_trace("my_poll end, rv=%d", rv);
   my_setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
   // data received
   if (rv > 0) {
     if (pfd[0].revents & POLLIN) {
-      log_debug("my_recv start");
+      //log_debug("my_recv start");
       n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
+      if(SPEEDUP_PROFILING)
+        log_fatal("recv end: %llu", get_cur_time_us());
       if ((n < 0) && (errno != EAGAIN)) {
         if(PROFILING_TIME){
           clock_gettime(CLOCK_REALTIME, &finish);
@@ -1108,17 +1131,23 @@ int my_net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_
         }
         return 1;
       }
-      log_debug("my_recv end, n=%d", n);
+      //log_debug("my_recv end, n=%d", n);
+      if(SPEEDUP_PROFILING)
+        log_fatal("recv while start: %llu", get_cur_time_us());
       while (n > 0) {
+        if(SPEEDUP_PROFILING)
+          log_fatal("response_buf start: %llu", get_cur_time_us());
         usleep(10);
         //log_error("ck_realloc in my_net_recv");
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
         memcpy(&(*response_buf)[*len], temp_buf, n);
         (*response_buf)[(*len) + n] = '\0';
         *len = *len + n;
-        log_debug("start my_recv in while loop");
+        if(SPEEDUP_PROFILING)
+          log_fatal("response_buf end: %llu", get_cur_time_us());
+        //log_debug("start my_recv in while loop");
         n = my_recv(sockfd, temp_buf, sizeof(temp_buf), 0);
-        log_debug("my_recv in while loop end, n=%d", n);
+        //log_debug("my_recv in while loop end, n=%d", n);
         if ((n < 0) && (errno != EAGAIN)) {
           if(PROFILING_TIME){
             clock_gettime(CLOCK_REALTIME, &finish);

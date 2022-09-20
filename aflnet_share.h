@@ -33,6 +33,8 @@
 // for remove_directory
 #include <dirent.h>
 #include <pthread.h>
+// for profiling
+#include <sys/time.h>
 
 /* share_queue.h start */
 #define min(a,b) (((a) < (b)) ? (a) : (b))
@@ -287,6 +289,7 @@ struct timespec share_start_time;
 bool PROFILING_TIME;
 bool USE_AFLNET_SHARE;
 bool unlink_first_time;
+#define SPEEDUP_PROFILING true
 
 // for tinydtls realloc problem
 unsigned long long MAX_OUT_BUF;
