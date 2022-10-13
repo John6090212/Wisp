@@ -32,5 +32,7 @@ SERVER=DNSMASQ AFL_PRELOAD=<socket_hook.so path> USE_AFLNET_SHARE=1 afl-fuzz -m 
 
 ## Reference
 [1] Huang, Guan-Zhang and Huang, Chun-Ying. "Wisp: On the Performance Profiling and Improvement of Fuzzing for Network Protocols" (2022). [[Thesis](https://etd.lib.nctu.edu.tw/cgi-bin/gs32/tugsweb.cgi?o=dnctucdr&s=id=%22GT073095550020%22.&searchmode=basic)]
+
 [2] V. -T. Pham, M. Böhme and A. Roychoudhury, "AFLNET: A Greybox Fuzzer for Network Protocols," 2020 IEEE 13th International Conference on Software Testing, Validation and Verification (ICST), 2020, pp. 460-465. [[Paper](https://ieeexplore.ieee.org/document/9159093)]
+
 [3] Anastasios Andronidis and Cristian Cadar. "SnapFuzz: High-Throughput Fuzzing of Network Applications". In: ACM SIGSOFT International Symposiumon Software Testing and Analysis. 2022. [[Paper](https://srg.doc.ic.ac.uk/files/papers/snapfuzz-issta-22.pdf)]
